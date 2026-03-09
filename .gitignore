@@ -1,23 +1,40 @@
-# Dependencies
-node_modules/
-
-# IDE
-.idea/
-.vscode/
-*.swp
-*.swo
-
-# OS
-.DS_Store
-Thumbs.db
-
 # Logs
+logs
 *.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
 
-# Environment
-.env
-.env.local
+node_modules
+dist
+dist-ssr
+dist-electron
+dist-server
+release
+*.local
 
-# Build
-dist/
-build/
+# Electron
+build-resources/icon.ico
+build-resources/icon.png
+
+# Generated start scripts
+start.bat
+start-production.bat
+
+# Credential vault (NEVER commit)
+*.enc
+vault.*
+instances.json
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?

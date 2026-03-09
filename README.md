@@ -1,109 +1,73 @@
-# ERPNext Level Dashboard
+# React + TypeScript + Vite
 
-A visual node-based dashboard for ERPNext organizations. View and manage your company structure, employees, departments, and projects in an interactive canvas.
+This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
 
-## Features
+Currently, two official plugins are available:
 
-- **Multi-Instance Support**: Switch between multiple ERPNext instances
-- **Interactive Canvas**: Drag, zoom, and pan through your organization
-- **Direct ERPNext Connection**: Communicates directly with ERPNext REST API
-- **Settings Panel**: Configure instances and credentials via UI
-- **Node Types**: Companies, Departments, Employees, Agents, Projects, Tasks
-- **Visual Connections**: See reporting relationships and department hierarchies
-- **Properties Panel**: Edit node properties directly
+- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Babel](https://babeljs.io/) (or [oxc](https://oxc.rs) when used in [rolldown-vite](https://vite.dev/guide/rolldown)) for Fast Refresh
+- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/) for Fast Refresh
 
-## Quick Start
+## React Compiler
 
-### 1. Start the Dashboard
+The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
 
-```bash
-# Start a local server
-npm start
-# or
-python3 -m http.server 8081
+## Expanding the ESLint configuration
 
-# Open in browser
-open http://localhost:8081/src/index.html
+If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
+
+```js
+export default defineConfig([
+  globalIgnores(['dist']),
+  {
+    files: ['**/*.{ts,tsx}'],
+    extends: [
+      // Other configs...
+
+      // Remove tseslint.configs.recommended and replace with this
+      tseslint.configs.recommendedTypeChecked,
+      // Alternatively, use this for stricter rules
+      tseslint.configs.strictTypeChecked,
+      // Optionally, add this for stylistic rules
+      tseslint.configs.stylisticTypeChecked,
+
+      // Other configs...
+    ],
+    languageOptions: {
+      parserOptions: {
+        project: ['./tsconfig.node.json', './tsconfig.app.json'],
+        tsconfigRootDir: import.meta.dirname,
+      },
+      // other options...
+    },
+  },
+])
 ```
 
-### 2. Configure ERPNext Connection
+You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
 
-1. Click the settings button (gear icon) in the top-right corner
-2. Select or add an ERPNext instance
-3. Enter your ERPNext URL, API Key, API Secret, and Company name
-4. Test the connection
+```js
+// eslint.config.js
+import reactX from 'eslint-plugin-react-x'
+import reactDom from 'eslint-plugin-react-dom'
 
-### 3. CORS Proxy (Development)
-
-If your ERPNext server doesn't have CORS enabled for localhost, use the included CORS proxy:
-
-```bash
-# Start the CORS proxy
-node proxy.js
-
-# In the settings panel, enable "Use CORS Proxy"
+export default defineConfig([
+  globalIgnores(['dist']),
+  {
+    files: ['**/*.{ts,tsx}'],
+    extends: [
+      // Other configs...
+      // Enable lint rules for React
+      reactX.configs['recommended-typescript'],
+      // Enable lint rules for React DOM
+      reactDom.configs.recommended,
+    ],
+    languageOptions: {
+      parserOptions: {
+        project: ['./tsconfig.node.json', './tsconfig.app.json'],
+        tsconfigRootDir: import.meta.dirname,
+      },
+      // other options...
+    },
+  },
+])
 ```
-
-The proxy runs on `http://localhost:3333` and forwards requests to ERPNext with proper CORS headers.
-
-## Configuration
-
-### ERPNext API Credentials
-
-1. In ERPNext, go to **Settings > API Access**
-2. Generate an API Key and Secret for your user
-3. Enter these credentials in the dashboard settings
-
-### Example Instances
-
-You can configure multiple ERPNext instances in the settings panel. Example configuration:
-
-- **Instance A**: https://company-a.example.com
-- **Instance B**: https://company-b.example.com
-- **Instance C**: https://company-c.example.com
-
-## Project Structure
-
-```
-ERPNext-Level-Dashboard/
-├── src/
-│   └── index.html      # Main dashboard (single-file app)
-├── proxy.js            # CORS proxy for development
-├── package.json
-└── README.md
-```
-
-## Keyboard Shortcuts
-
-| Key | Action |
-|-----|--------|
-| `Delete` | Delete selected node |
-| `Escape` | Deselect all / Cancel connection |
-| `Ctrl+A` | Select all nodes |
-| `Ctrl+S` | Save changes |
-| Mouse wheel | Zoom in/out |
-| Right-click | Context menu (add nodes) |
-
-## Node Types
-
-| Type | Description | ERPNext Doctype |
-|------|-------------|-----------------|
-| Company | Organization root | Company |
-| Department | Organizational unit | Department |
-| Employee | Human worker | Employee |
-| Agent | AI employee | Employee (is_agent=1) |
-| Project | Work project | Project |
-| Task | Individual task | Task |
-
-## Production Deployment
-
-For production use, configure CORS on your ERPNext server to allow requests from your dashboard domain. In ERPNext:
-
-1. Go to **Setup > Website > Website Settings**
-2. Add your dashboard domain to "Allow CORS From"
-
-Alternatively, deploy the dashboard on the same domain as ERPNext.
-
-## License
-
-MIT - OpenAEC Foundation

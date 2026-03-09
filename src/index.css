@@ -1,0 +1,16 @@
+@import "tailwindcss";
+@import "leaflet/dist/leaflet.css";
+
+@theme {
+  --color-3bm-purple: #451a44;
+  --color-3bm-purple-light: #5e2a5c;
+  --color-3bm-purple-dark: #2d0f2c;
+  --color-3bm-teal: #45b6a8;
+  --color-3bm-teal-light: #6bc9be;
+  --color-3bm-teal-dark: #349488;
+}
+
+body {
+  margin: 0;
+  font-family: system-ui, -apple-system, sans-serif;
+}
