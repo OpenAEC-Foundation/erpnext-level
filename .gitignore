@@ -23,10 +23,9 @@ build-resources/icon.png
 start.bat
 start-production.bat
 
-# Credential vault (NEVER commit)
+# Encrypted credential vault (NEVER commit)
 *.enc
 vault.*
-instances.json
 
 # Claude Code
 .claude/

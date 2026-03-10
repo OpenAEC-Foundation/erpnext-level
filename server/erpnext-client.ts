@@ -9,6 +9,7 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "fs";
 import { join } from "path";
 import { homedir } from "os";
+import { readVault, writeVault, type VaultEntry } from "./vault.js";
 
 export interface ERPInstanceConfig {
   id: string;
@@ -30,27 +31,84 @@ function getConfigPath(): string {
   return join(getConfigDir(), "instances.json");
 }
 
-/** Load instances from config file */
+/** Raw instance entry from instances.json (keys optional — they live in vault) */
+interface RawInstance {
+  id: string;
+  name: string;
+  url: string;
+  apiKey?: string;
+  apiSecret?: string;
+}
+
+/** Load instances from instances.json + merge credentials from encrypted vault */
 function loadInstances(): ERPInstanceConfig[] {
   const path = getConfigPath();
   if (!existsSync(path)) {
     console.log(`[config] No instances.json found at ${path}`);
     console.log(`[config] Create it with your ERPNext instances. Example:`);
     console.log(JSON.stringify([
-      { id: "my-erp", name: "My ERP", url: "https://myerp.example.com", apiKey: "your_key", apiSecret: "your_secret" },
+      { id: "my-erp", name: "My ERP", url: "https://myerp.example.com" },
     ], null, 2));
-    // Write empty array so the file exists for users to edit
     writeFileSync(path, "[\n\n]\n", "utf-8");
     return [];
   }
   try {
     const raw = readFileSync(path, "utf-8");
-    const parsed = JSON.parse(raw);
+    const parsed: RawInstance[] = JSON.parse(raw);
     if (!Array.isArray(parsed)) {
       console.error(`[config] instances.json must be an array`);
       return [];
     }
-    return parsed.filter((i: ERPInstanceConfig) => i.id && i.url && i.apiKey && i.apiSecret);
+
+    // Load vault credentials
+    const vaultEntries = readVault();
+    const vaultMap = new Map<string, VaultEntry>();
+    for (const v of vaultEntries) vaultMap.set(v.id, v);
+
+    // Migrate: if instances.json still has keys, move them to vault and strip from file
+    let needsMigration = false;
+    for (const inst of parsed) {
+      if (inst.apiKey && inst.apiSecret) {
+        const existing = vaultMap.get(inst.id);
+        if (!existing || !existing.apiKey) {
+          // Migrate to vault
+          vaultMap.set(inst.id, {
+            id: inst.id,
+            name: inst.name,
+            url: inst.url,
+            apiKey: inst.apiKey,
+            apiSecret: inst.apiSecret,
+          });
+          needsMigration = true;
+        }
+      }
+    }
+
+    if (needsMigration) {
+      // Write updated vault
+      writeVault(Array.from(vaultMap.values()));
+      console.log(`[config] Migrated credentials to encrypted vault`);
+
+      // Strip keys from instances.json
+      const cleaned = parsed.map(({ id, name, url }) => ({ id, name, url }));
+      writeFileSync(path, JSON.stringify(cleaned, null, 2), "utf-8");
+      console.log(`[config] Removed credentials from instances.json (now safe for git)`);
+    }
+
+    // Merge: instances.json defines the list, vault provides credentials
+    return parsed
+      .filter((i) => i.id && i.url)
+      .map((inst) => {
+        const vault = vaultMap.get(inst.id);
+        return {
+          id: inst.id,
+          name: inst.name,
+          url: inst.url,
+          apiKey: vault?.apiKey || "",
+          apiSecret: vault?.apiSecret || "",
+        };
+      })
+      .filter((i) => i.apiKey && i.apiSecret);
   } catch (err) {
     console.error(`[config] Error reading instances.json:`, err);
     return [];
