@@ -5,7 +5,7 @@ import type { ProjectRecord } from "../lib/DataContext";
 import { geocodeAddress } from "../lib/geocode";
 import {
   FolderKanban, RefreshCw, Search, Plus, FolderOpen, MapPin, Map as MapIcon,
-  X, ExternalLink, Clock, CheckCircle2, ListTodo, BarChart3, CalendarDays,
+  X, ExternalLink, Clock, CheckCircle2, ListTodo, CalendarDays,
   ChevronRight, AlertCircle, List,
 } from "lucide-react";
 import { MapContainer, TileLayer, Marker, Popup } from "react-leaflet";

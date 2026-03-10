@@ -79,11 +79,7 @@ export default function Quotations() {
     );
   }, [quotations, search]);
 
-  const companies = useMemo(() => {
-    const set = new Set<string>();
-    for (const q of quotations) if (q.company) set.add(q.company);
-    return Array.from(set).sort();
-  }, [quotations]);
+
 
   const totalValue = filtered.reduce((s, q) => s + q.net_total, 0);
 

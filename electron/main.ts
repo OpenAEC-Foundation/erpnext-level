@@ -14,8 +14,10 @@ process.env["ELECTRON"] = "1";
 
 // Determine paths — in packaged app, resources are in asar
 const isDev = !app.isPackaged;
+// In dev: __dirname is dist-electron/electron/, so go up 2 levels to project root
+// In packaged: resources are in asar
 const rootDir = isDev
-  ? resolve(__dirname, "..")
+  ? resolve(__dirname, "..", "..")
   : resolve(process.resourcesPath, "app");
 
 // Set dist dir for server to serve the built frontend

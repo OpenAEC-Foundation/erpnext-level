@@ -1,9 +1,9 @@
 import { useEffect, useState, useMemo } from "react";
-import { fetchList, callMethod, getAuthHeaders, getErpNextAppUrl } from "../lib/erpnext";
+import { fetchList, getAuthHeaders, getErpNextAppUrl } from "../lib/erpnext";
 import { useEmployees } from "../lib/DataContext";
 import {
-  ListTodo, RefreshCw, Plus, CheckCircle2, Circle, AlertCircle,
-  ExternalLink, ChevronDown, X, User,
+  ListTodo, RefreshCw, Plus, CheckCircle2, Circle,
+  ExternalLink, X, User,
 } from "lucide-react";
 
 interface ToDo {

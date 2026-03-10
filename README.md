@@ -1,73 +1,119 @@
-# React + TypeScript + Vite
+# ERPNext Level
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+Multi-instance ERPNext dashboard for managing multiple ERPNext sites from a single interface. Built by the [OpenAEC Foundation](https://github.com/OpenAEC-Foundation).
 
-Currently, two official plugins are available:
+## Features
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Babel](https://babeljs.io/) (or [oxc](https://oxc.rs) when used in [rolldown-vite](https://vite.dev/guide/rolldown)) for Fast Refresh
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/) for Fast Refresh
+- **Multi-instance support** — Connect and switch between multiple ERPNext sites
+- **Real-time caching** — Polls all instances every 60 seconds for incremental updates
+- **25+ dashboard pages** — Sales, purchases, projects, tasks, HR, financial reports, and more
+- **Quick time booking** — Book hours directly from the dashboard with project/task selection
+- **Agent assistant** — Natural language command interface for common ERPNext actions
+- **Integrated terminal** — WebSocket-based terminal for direct access
+- **Windows installer** — NSIS installer and portable executable via Electron
+- **Dutch financial reports** — BTW-aangifte, loonaangifte, jaarrekening, rendabiliteit
 
-## React Compiler
+## Tech Stack
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+| Layer | Technology |
+|-------|-----------|
+| Frontend | React 19, TypeScript, Vite 7, TailwindCSS 4 |
+| Backend | Node.js, Express, WebSocket (ws) |
+| Desktop | Electron 35, electron-builder (NSIS + portable) |
+| Maps | Leaflet + react-leaflet |
+| Terminal | xterm.js |
 
-## Expanding the ESLint configuration
+## Quick Start
 
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
+### Prerequisites
 
-```js
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
+- Node.js 20+
+- npm
 
-      // Remove tseslint.configs.recommended and replace with this
-      tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      tseslint.configs.stylisticTypeChecked,
+### Install dependencies
 
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+```bash
+npm install
 ```
 
-You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
+### Configure ERPNext instances
 
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
+Create `~/.erpnext-level/instances.json`:
 
-export default defineConfig([
-  globalIgnores(['dist']),
+```json
+[
   {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+    "id": "my-site",
+    "name": "My ERPNext",
+    "url": "https://erp.example.com",
+    "apiKey": "your-api-key",
+    "apiSecret": "your-api-secret"
+  }
+]
 ```
+
+### Development
+
+```bash
+# Frontend only (proxies directly to configured instance)
+npm run dev
+
+# Backend + frontend (full local stack)
+npm run dev:all
+
+# Backend only
+npm run dev:server
+```
+
+### Build
+
+```bash
+# Production build (frontend)
+npm run build
+
+# Windows installer (Setup.exe + Portable.exe)
+npm run build:exe
+
+# Portable only
+npm run build:portable
+```
+
+Output goes to `release/`.
+
+### Electron (development)
+
+```bash
+npm run electron:dev
+```
+
+## Project Structure
+
+```
+server/
+  index.ts          Express backend with API proxy and caching
+  cache.ts          Multi-instance cache manager
+  erpnext-client.ts ERPNext API client and instance config loader
+  agent.ts          Agent chat handler
+  terminal.ts       WebSocket terminal handler
+  vault.ts          Encrypted credential storage
+src/
+  App.tsx           Main React component with routing
+  components/       Shared UI components (Sidebar, AgentPanel, etc.)
+  pages/            Dashboard pages (25+)
+  lib/              API client, data context, intent system
+electron/
+  main.ts           Electron main process
+```
+
+## Configuration
+
+| Environment Variable | Default | Description |
+|---------------------|---------|-------------|
+| `PORT` | `3001` | Backend server port |
+| `USE_BACKEND` | — | Set to `true` to proxy Vite dev to local backend |
+| `ERPNEXT_LEVEL_CONFIG_DIR` | `~/.erpnext-level` | Config directory |
+| `ERPNEXT_LEVEL_DIST` | `./dist` | Frontend dist directory |
+
+## License
+
+Copyright OpenAEC Foundation.

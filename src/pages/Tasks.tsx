@@ -3,7 +3,7 @@ import { fetchList, fetchDocument, createDocument, callMethod, getErpNextAppUrl 
 import {
   CheckSquare, RefreshCw, Search, LayoutGrid, List, User, Filter,
   GripVertical, ChevronDown, Plus, X, ExternalLink, Calendar, Flag,
-  FileText, Briefcase, Clock,
+  FileText, Briefcase,
 } from "lucide-react";
 import CompanySelect from "../components/CompanySelect";
 import { useProjects } from "../lib/DataContext";
@@ -292,11 +292,7 @@ export default function Tasks() {
     });
   }, [filtered]);
 
-  const companies = useMemo(() => {
-    const set = new Set<string>();
-    for (const t of tasks) if (t.company) set.add(t.company);
-    return Array.from(set).sort();
-  }, [tasks]);
+
 
   async function reassignTask(taskName: string, fromEmail: string, toEmail: string) {
     if (fromEmail === toEmail) return;
@@ -376,7 +372,7 @@ export default function Tasks() {
   }
 
   /** Try to create a draft Delivery Note from the project's linked Sales Order */
-  async function createDeliveryNoteFromProject(projectName: string, taskName: string) {
+  async function createDeliveryNoteFromProject(projectName: string, _taskName: string) {
     // Find Sales Orders linked to this project
     const salesOrders = await fetchList<{ name: string; customer: string; company: string }>("Sales Order", {
       fields: ["name", "customer", "company"],
@@ -621,7 +617,6 @@ function TaskDetail({
       icon: Flag,
       value: (
         <WorkflowChanger
-          taskName={task.name}
           currentState={task.workflow_state}
           onWorkflowChange={(action, nextState) => onWorkflowChange(task.name, action, nextState)}
         />
@@ -632,7 +627,6 @@ function TaskDetail({
       icon: Flag,
       value: (
         <StatusChanger
-          taskName={task.name}
           currentStatus={task.status}
           onStatusChange={(s) => onStatusChange(task.name, s)}
         />
@@ -812,8 +806,7 @@ function TaskDetail({
 
 // ---- KANBAN with Drag & Drop ----
 
-function StatusChanger({ taskName, currentStatus, onStatusChange }: {
-  taskName: string;
+function StatusChanger({ currentStatus, onStatusChange }: {
   currentStatus: string;
   onStatusChange: (status: string) => void;
 }) {
@@ -850,8 +843,7 @@ function StatusChanger({ taskName, currentStatus, onStatusChange }: {
   );
 }
 
-function WorkflowChanger({ taskName, currentState, onWorkflowChange }: {
-  taskName: string;
+function WorkflowChanger({ currentState, onWorkflowChange }: {
   currentState: string;
   onWorkflowChange: (action: string, nextState: string) => void;
 }) {
@@ -993,7 +985,6 @@ function KanbanView({
                       </span>
                     )}
                     <StatusChanger
-                      taskName={task.name}
                       currentStatus={task.status}
                       onStatusChange={(newStatus) => onStatusChange(task.name, newStatus)}
                     />

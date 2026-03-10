@@ -3,6 +3,7 @@ import Sidebar, { type Page, type ViewMode } from "./components/Sidebar";
 import InstanceBar from "./components/InstanceBar";
 import GlobalSearch from "./components/GlobalSearch";
 import AgentPanel from "./components/AgentPanel";
+
 import { DataProvider } from "./lib/DataContext";
 import { getActiveInstanceId } from "./lib/instances";
 import SalesInvoices from "./pages/SalesInvoices";

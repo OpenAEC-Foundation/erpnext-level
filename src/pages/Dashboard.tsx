@@ -1,11 +1,11 @@
 import { useEffect, useState, useMemo, useRef, useCallback } from "react";
-import { fetchList, fetchDocument, createDocument, updateDocument, deleteDocument, callMethod, getErpNextAppUrl } from "../lib/erpnext";
+import { fetchList, fetchDocument, createDocument, updateDocument, deleteDocument, getErpNextAppUrl } from "../lib/erpnext";
 import { useEmployees, useProjects, useLeaves } from "../lib/DataContext";
 import type { Page, ViewMode } from "../components/Sidebar";
 import { getActiveInstance } from "../lib/instances";
 import {
   Send, Search, Clock, FolderKanban, CheckSquare,
-  ExternalLink, ChevronDown, Flag, Cake, CalendarDays,
+  ExternalLink, ChevronDown, Cake,
   Palmtree, User, ListTodo, Plus, Trash2, Save, X,
 } from "lucide-react";
 
@@ -362,6 +362,32 @@ function QuickTimeBooking() {
   const [dayEntries, setDayEntries] = useState<TimesheetDetail[]>([]);
   const [loadingEntries, setLoadingEntries] = useState(false);
 
+  // Last 3 bookings by this employee
+  const [recentEntries, setRecentEntries] = useState<TimesheetDetail[]>([]);
+  const [loadingRecent, setLoadingRecent] = useState(false);
+
+  useEffect(() => {
+    if (!employee) { setRecentEntries([]); return; }
+    setLoadingRecent(true);
+    fetchList<{ name: string }>("Timesheet", {
+      fields: ["name"],
+      filters: [["employee", "=", employee], ["docstatus", "!=", 2]],
+      limit_page_length: 5,
+      order_by: "modified desc",
+    }).then((timesheets) => {
+      if (timesheets.length === 0) { setRecentEntries([]); setLoadingRecent(false); return; }
+      const tsNames = timesheets.map((t) => t.name);
+      fetchList<TimesheetDetail>("Timesheet Detail", {
+        fields: ["name", "parent", "activity_type", "hours", "project", "from_time"],
+        filters: [["parent", "in", tsNames], ["parenttype", "=", "Timesheet"]],
+        limit_page_length: 50,
+        order_by: "from_time desc",
+      }).then((details) => setRecentEntries(details.slice(0, 3)))
+        .catch(() => setRecentEntries([]))
+        .finally(() => setLoadingRecent(false));
+    }).catch(() => { setRecentEntries([]); setLoadingRecent(false); });
+  }, [employee, success]);
+
   // Calculate hours from time range
   const hours = useMemo(() => {
     if (!fromTime || !toTime) return 0;
@@ -685,6 +711,35 @@ function QuickTimeBooking() {
             className="w-full px-2.5 py-2 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-3bm-teal" />
         </div>
       </form>
+
+      {/* Last 3 bookings by employee */}
+      {employee && (
+        <div className="mt-4 pt-3 border-t border-slate-100">
+          <p className="text-xs font-medium text-slate-500 mb-2">Laatste 3 boekingen</p>
+          {loadingRecent ? (
+            <p className="text-xs text-slate-400">Laden...</p>
+          ) : recentEntries.length === 0 ? (
+            <p className="text-xs text-slate-400">Geen eerdere boekingen</p>
+          ) : (
+            <div className="space-y-1">
+              {recentEntries.map((entry) => (
+                <div key={entry.name} className="flex items-center justify-between text-xs">
+                  <div className="flex items-center gap-2 text-slate-600">
+                    <span className="text-slate-400 w-20 shrink-0">
+                      {new Date(entry.from_time).toLocaleDateString("nl-NL", { day: "numeric", month: "short" })}
+                    </span>
+                    <a href={`${getErpNextAppUrl()}/app/timesheet/${entry.parent}`} target="_blank" rel="noopener noreferrer"
+                      className="font-mono text-3bm-teal hover:underline">{entry.parent}</a>
+                    <span className="bg-slate-100 px-1.5 py-0.5 rounded">{entry.activity_type}</span>
+                    {entry.project && <span className="text-slate-400 truncate max-w-[120px]">{entry.project}</span>}
+                  </div>
+                  <span className="font-semibold text-slate-700">{entry.hours.toLocaleString("nl-NL", { maximumFractionDigits: 1 })}u</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Day entries summary */}
       <div className="mt-4 pt-3 border-t border-slate-100">

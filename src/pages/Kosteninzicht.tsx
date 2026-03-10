@@ -106,7 +106,6 @@ export default function Kosteninzicht() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [expandedCategories, setExpandedCategories] = useState<Set<string>>(new Set());
-  const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
   const [selectedAccount, setSelectedAccount] = useState<{ account: string; account_name: string } | null>(null);
   const [expandedParties, setExpandedParties] = useState<Set<string>>(new Set());
 

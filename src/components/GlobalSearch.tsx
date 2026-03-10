@@ -45,7 +45,7 @@ export default function GlobalSearch({ onNavigate, onClose }: GlobalSearchProps)
   const [loading, setLoading] = useState(false);
   const [selectedIndex, setSelectedIndex] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
-  const timerRef = useRef<ReturnType<typeof setTimeout>>();
+  const timerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
 
   useEffect(() => {
     inputRef.current?.focus();
@@ -60,9 +60,6 @@ export default function GlobalSearch({ onNavigate, onClose }: GlobalSearchProps)
     try {
       const promises = searchTargets.map(async (target) => {
         try {
-          const orFilters = `["${target.labelField}","like","%${q}%"]`;
-          const descFilter = `["${target.descField}","like","%${q}%"]`;
-
           // Search by name/id
           const byName = await fetchList<Record<string, string>>(target.doctype, {
             fields: [target.labelField, target.descField],

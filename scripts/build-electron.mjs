@@ -16,7 +16,7 @@ await build({
   platform: "node",
   target: "node20",
   format: "cjs",
-  outfile: resolve(root, "dist-electron/electron/main.js"),
+  outfile: resolve(root, "dist-electron/electron/main.cjs"),
   external: ["electron"],
   // No need for define; main.ts sets ELECTRON at runtime
   sourcemap: true,

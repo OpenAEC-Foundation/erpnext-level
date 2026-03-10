@@ -223,11 +223,7 @@ export default function SalesInvoices() {
   useEffect(() => { if (subTab === "alle") loadAllInvoices(); }, [subTab, company, statusFilter, fromDate, toDate]);
 
   // --- Computed ---
-  const companies = useMemo(() => {
-    const set = new Set<string>();
-    for (const inv of invoices) if (inv.company) set.add(inv.company);
-    return Array.from(set).sort();
-  }, [invoices]);
+
 
   const totalOutstanding = invoices.reduce((s, i) => s + i.outstanding_amount, 0);
   const totalOverdue = invoices.filter((i) => i.status === "Overdue");

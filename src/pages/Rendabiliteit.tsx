@@ -1,9 +1,9 @@
 import { useEffect, useState, useMemo } from "react";
-import { fetchAll, fetchList } from "../lib/erpnext";
+import { fetchAll } from "../lib/erpnext";
 import { useEmployees } from "../lib/DataContext";
 import {
   UserCheck, RefreshCw, Filter, TrendingUp, TrendingDown,
-  Clock, DollarSign, Users, ChevronDown, ChevronUp,
+  Clock, DollarSign, ChevronDown, ChevronUp,
 } from "lucide-react";
 import CompanySelect from "../components/CompanySelect";
 

@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import { Settings, Eye, EyeOff, Save, Wifi, FolderOpen, Building2, ExternalLink } from "lucide-react";
 import { useCompanies, useEmployees } from "../lib/DataContext";
 import { syncCurrentInstanceBack, getActiveInstance, getActiveInstanceId } from "../lib/instances";

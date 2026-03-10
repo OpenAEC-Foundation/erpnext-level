@@ -250,7 +250,24 @@ export class CacheManager {
 
   private async fullRefreshOne(cfg: DoctypeConfig): Promise<void> {
     const now = new Date().toISOString().replace("T", " ").slice(0, 19);
-    const docs = await fetchAll(this.instance, cfg.doctype, cfg.fields, cfg.baseFilters || []);
+    let docs: Doc[];
+    try {
+      docs = await fetchAll(this.instance, cfg.doctype, cfg.fields, cfg.baseFilters || []);
+    } catch (err) {
+      // If a custom field is not permitted, retry without custom_* fields
+      const msg = (err as Error).message || "";
+      if (msg.includes("Field not permitted") || msg.includes("Unknown column")) {
+        const safeFields = cfg.fields.filter((f) => !f.startsWith("custom_"));
+        if (safeFields.length < cfg.fields.length) {
+          console.log(`[cache:${this.instance.id}] ${cfg.doctype}: retrying without custom fields`);
+          docs = await fetchAll(this.instance, cfg.doctype, safeFields, cfg.baseFilters || []);
+        } else {
+          throw err;
+        }
+      } else {
+        throw err;
+      }
+    }
     const map = new Map<string, Doc>();
     for (const doc of docs) {
       map.set(doc.name as string, doc);
@@ -282,7 +299,22 @@ export class CacheManager {
       ...(cfg.baseFilters || []),
       ["modified", ">=", lastSync],
     ];
-    const modified = await fetchAll(this.instance, cfg.doctype, cfg.fields, filters);
+    let modified: Doc[];
+    try {
+      modified = await fetchAll(this.instance, cfg.doctype, cfg.fields, filters);
+    } catch (err) {
+      const msg = (err as Error).message || "";
+      if (msg.includes("Field not permitted") || msg.includes("Unknown column")) {
+        const safeFields = cfg.fields.filter((f) => !f.startsWith("custom_"));
+        if (safeFields.length < cfg.fields.length) {
+          modified = await fetchAll(this.instance, cfg.doctype, safeFields, filters);
+        } else {
+          throw err;
+        }
+      } else {
+        throw err;
+      }
+    }
 
     if (modified.length > 0) {
       const map = this.store.get(cfg.doctype)!;

@@ -1,7 +1,7 @@
 import { useEffect, useState, useMemo } from "react";
 import { fetchAll, getErpNextAppUrl } from "../lib/erpnext";
 import {
-  TrendingUp, RefreshCw, Filter, ExternalLink, BarChart3, FileText, Hash,
+  TrendingUp, RefreshCw, Filter, ExternalLink, BarChart3, Hash,
 } from "lucide-react";
 import CompanySelect from "../components/CompanySelect";
 

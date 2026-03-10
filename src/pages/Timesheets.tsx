@@ -794,7 +794,6 @@ function UrenBoekenForm() {
 /* ─── Timesheets Goedkeuren ─── */
 
 function TimesheetGoedkeuren() {
-  const allEmployees = useEmployees();
   const [timesheets, setTimesheets] = useState<Timesheet[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);

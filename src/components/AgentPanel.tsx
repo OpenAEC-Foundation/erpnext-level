@@ -1,15 +1,19 @@
-import { useState, useRef, useEffect, useMemo, useCallback } from "react";
+import React, { useState, useRef, useEffect, useMemo, useCallback } from "react";
 import {
   Sparkles, Send, Loader2, Trash2, ChevronDown,
-  Maximize2, Minimize2, Undo2, ExternalLink, Zap, HelpCircle,
+  Maximize2, Minimize2, Undo2, Zap, HelpCircle,
+  Terminal as TerminalIcon, RefreshCw,
 } from "lucide-react";
-import { getActiveInstance } from "../lib/instances";
+import { getActiveInstance, getActiveInstanceId } from "../lib/instances";
 import { useEmployees, useProjects, useCompanies } from "../lib/DataContext";
 import {
   matchIntents, buildUnmatchedIssueUrl, INTENTS,
   type MatchResult, type IntentContext, type Intent,
 } from "../lib/intents";
-import { deleteDocument, getErpNextAppUrl } from "../lib/erpnext";
+import { deleteDocument } from "../lib/erpnext";
+import { Terminal } from "@xterm/xterm";
+import { FitAddon } from "@xterm/addon-fit";
+import "@xterm/xterm/css/xterm.css";
 
 /* ─── Types ─── */
 
@@ -25,8 +29,9 @@ let logCounter = 0;
 /* ─── Main Panel ─── */
 
 export default function AgentPanel() {
-  const [expanded, setExpanded] = useState(true);
+  const [expanded, setExpanded] = useState(false);
   const [tall, setTall] = useState(false);
+  const [activeTab, setActiveTab] = useState<"agent" | "terminal">("agent");
   const [log, setLog] = useState<LogEntry[]>([]);
   const [input, setInput] = useState("");
   const [suggestions, setSuggestions] = useState<MatchResult[]>([]);
@@ -38,6 +43,13 @@ export default function AgentPanel() {
   const logEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const slotRefs = useRef<Map<string, HTMLInputElement | HTMLSelectElement>>(new Map());
+
+  // Terminal state
+  const termRef = useRef<HTMLDivElement>(null);
+  const terminalRef = useRef<Terminal | null>(null);
+  const fitAddonRef = useRef<FitAddon | null>(null);
+  const wsRef = useRef<WebSocket | null>(null);
+  const [termConnected, setTermConnected] = useState(false);
 
   const employees = useEmployees();
   const projects = useProjects();
@@ -202,9 +214,9 @@ export default function AgentPanel() {
   }
 
   /* ─── Build suggestion label with slot highlights ─── */
-  function buildSuggestionLabel(intent: Intent, extracted: Record<string, string>): JSX.Element {
+  function buildSuggestionLabel(intent: Intent, extracted: Record<string, string>): React.JSX.Element {
     // Build a readable sentence
-    const parts: JSX.Element[] = [];
+    const parts: React.JSX.Element[] = [];
     // Find the best pattern that has slots
     const patternWithSlots = intent.patterns.find((p) => p.includes("{")) || intent.patterns[0];
     const tokens = patternWithSlots.split(/(\{[^}]+\})/g);
@@ -240,6 +252,76 @@ export default function AgentPanel() {
   const instance = getActiveInstance();
   const panelHeight = tall ? "h-[560px]" : "h-[420px]";
 
+  /* ─── Terminal connect ─── */
+  const connectTerminal = useCallback(() => {
+    if (wsRef.current) { wsRef.current.close(); wsRef.current = null; }
+    if (terminalRef.current) { terminalRef.current.dispose(); terminalRef.current = null; }
+
+    const instanceId = getActiveInstanceId();
+    const terminal = new Terminal({
+      cursorBlink: true, fontSize: 13,
+      fontFamily: "'Cascadia Code', 'Fira Code', 'JetBrains Mono', monospace",
+      theme: {
+        background: "#1a1b26", foreground: "#a9b1d6", cursor: "#c0caf5",
+        selectionBackground: "#33467c", black: "#15161e", red: "#f7768e",
+        green: "#9ece6a", yellow: "#e0af68", blue: "#7aa2f7", magenta: "#bb9af7",
+        cyan: "#7dcfff", white: "#a9b1d6", brightBlack: "#414868",
+        brightRed: "#f7768e", brightGreen: "#9ece6a", brightYellow: "#e0af68",
+        brightBlue: "#7aa2f7", brightMagenta: "#bb9af7", brightCyan: "#7dcfff",
+        brightWhite: "#c0caf5",
+      },
+      rows: 24, cols: 80, scrollback: 5000, convertEol: true,
+    });
+
+    const fitAddon = new FitAddon();
+    terminal.loadAddon(fitAddon);
+    terminalRef.current = terminal;
+    fitAddonRef.current = fitAddon;
+
+    if (termRef.current) {
+      terminal.open(termRef.current);
+      setTimeout(() => fitAddon.fit(), 50);
+    }
+
+    terminal.writeln("\x1b[1;36m╔══════════════════════════════════════════╗\x1b[0m");
+    terminal.writeln(`\x1b[1;36m║\x1b[0m  ERPNext Level Terminal                  \x1b[1;36m║\x1b[0m`);
+    terminal.writeln(`\x1b[1;36m║\x1b[0m  Instance: \x1b[1;33m${(instance.name || instanceId).padEnd(28)}\x1b[0m \x1b[1;36m║\x1b[0m`);
+    terminal.writeln("\x1b[1;36m╚══════════════════════════════════════════╝\x1b[0m");
+    terminal.writeln("\x1b[90mVerbinden...\x1b[0m\n");
+
+    const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+    const wsUrl = `${protocol}//${window.location.hostname}:3001/ws/terminal?instance=${encodeURIComponent(instanceId)}`;
+    const ws = new WebSocket(wsUrl);
+    wsRef.current = ws;
+
+    ws.onopen = () => { setTermConnected(true); terminal.writeln("\x1b[1;32m✓ Verbonden\x1b[0m\n"); };
+    ws.onmessage = (event) => {
+      try {
+        const msg = JSON.parse(event.data);
+        if (msg.type === "output") terminal.write(msg.data);
+        else if (msg.type === "exit") { terminal.writeln(`\n\x1b[90m[Proces beëindigd: ${msg.code}]\x1b[0m`); setTermConnected(false); }
+        else if (msg.type === "error") terminal.writeln(`\n\x1b[1;31m${msg.message}\x1b[0m`);
+      } catch { terminal.write(event.data); }
+    };
+    ws.onclose = () => { setTermConnected(false); terminal.writeln("\n\x1b[90m[Verbinding verbroken]\x1b[0m"); };
+    ws.onerror = () => { terminal.writeln("\n\x1b[1;31mWebSocket fout — is de server actief?\x1b[0m"); setTermConnected(false); };
+    terminal.onData((data) => { if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "input", data })); });
+  }, [instance.name]);
+
+  useEffect(() => {
+    if (expanded && activeTab === "terminal") {
+      const timer = setTimeout(connectTerminal, 100);
+      return () => { clearTimeout(timer); wsRef.current?.close(); terminalRef.current?.dispose(); };
+    }
+  }, [expanded, activeTab, connectTerminal]);
+
+  useEffect(() => {
+    if (expanded && activeTab === "terminal" && fitAddonRef.current) {
+      const timer = setTimeout(() => fitAddonRef.current?.fit(), 100);
+      return () => clearTimeout(timer);
+    }
+  }, [tall, expanded, activeTab]);
+
   /* ─── Collapsed state ─── */
   if (!expanded) {
     return (
@@ -254,39 +336,76 @@ export default function AgentPanel() {
   }
 
   /* ─── Expanded ─── */
+  const panelWidth = activeTab === "terminal" && tall ? "w-[700px]" : "w-[440px]";
+  const panelBg = activeTab === "terminal" ? "bg-[#1a1b26] border-[#33467c]" : "bg-white border-slate-200";
+
   return (
-    <div className={`fixed bottom-5 right-5 z-40 w-[440px] ${panelHeight} bg-white rounded-xl shadow-2xl border border-slate-200 flex flex-col overflow-hidden transition-all`}>
+    <div className={`fixed bottom-5 right-5 z-40 ${panelWidth} ${panelHeight} ${panelBg} rounded-xl shadow-2xl border flex flex-col overflow-hidden transition-all`}>
       {/* Header */}
       <div
-        className="flex items-center justify-between px-3 h-10 bg-gradient-to-r from-3bm-purple-dark to-3bm-purple text-white flex-shrink-0 cursor-pointer select-none rounded-t-xl"
-        onClick={() => setExpanded(false)}
+        className={`flex items-center justify-between px-3 h-10 ${activeTab === "terminal" ? "bg-[#24283b] text-[#a9b1d6]" : "bg-gradient-to-r from-3bm-purple-dark to-3bm-purple text-white"} flex-shrink-0 select-none rounded-t-xl`}
       >
-        <div className="flex items-center gap-2 min-w-0">
-          <Sparkles size={14} className="flex-shrink-0" />
-          <span className="text-sm font-medium">Open AEC Assistent</span>
-          <span className="text-[10px] text-white/50">{instance.name}</span>
+        <div className="flex items-center gap-1 min-w-0">
+          {/* Tab buttons */}
+          <button
+            onClick={() => setActiveTab("agent")}
+            className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium cursor-pointer transition-colors ${
+              activeTab === "agent" ? "bg-white/20" : "hover:bg-white/10 opacity-60"
+            }`}
+          >
+            <Sparkles size={12} />
+            Agent
+          </button>
+          <button
+            onClick={() => setActiveTab("terminal")}
+            className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium cursor-pointer transition-colors ${
+              activeTab === "terminal" ? "bg-white/20" : "hover:bg-white/10 opacity-60"
+            }`}
+          >
+            <TerminalIcon size={12} />
+            Terminal
+            {activeTab === "terminal" && (
+              <span className={`w-1.5 h-1.5 rounded-full ${termConnected ? "bg-[#9ece6a]" : "bg-[#f7768e]"}`} />
+            )}
+          </button>
+          <span className="text-[10px] opacity-50 ml-1">{instance.name}</span>
         </div>
         <div className="flex items-center gap-1 flex-shrink-0">
-          <button onClick={(e) => { e.stopPropagation(); setShowAllCommands(!showAllCommands); }}
-            className="p-1 hover:bg-white/10 rounded cursor-pointer" title="Alle commando's">
-            <HelpCircle size={12} />
-          </button>
+          {activeTab === "agent" && (
+            <button onClick={(e) => { e.stopPropagation(); setShowAllCommands(!showAllCommands); }}
+              className="p-1 hover:bg-white/10 rounded cursor-pointer" title="Alle commando's">
+              <HelpCircle size={12} />
+            </button>
+          )}
+          {activeTab === "terminal" && (
+            <button onClick={connectTerminal}
+              className="p-1 hover:bg-white/10 rounded cursor-pointer" title="Herverbinden">
+              <RefreshCw size={11} />
+            </button>
+          )}
           <button onClick={(e) => { e.stopPropagation(); setTall(!tall); }}
             className="p-1 hover:bg-white/10 rounded cursor-pointer" title={tall ? "Kleiner" : "Groter"}>
             {tall ? <Minimize2 size={12} /> : <Maximize2 size={12} />}
           </button>
-          {log.length > 0 && (
+          {activeTab === "agent" && log.length > 0 && (
             <button onClick={(e) => { e.stopPropagation(); setLog([]); }}
               className="p-1 hover:bg-white/10 rounded cursor-pointer" title="Wissen">
               <Trash2 size={12} />
             </button>
           )}
-          <ChevronDown size={14} />
+          <button onClick={() => setExpanded(false)} className="cursor-pointer p-1 hover:bg-white/10 rounded">
+            <ChevronDown size={14} />
+          </button>
         </div>
       </div>
 
-      {/* Body */}
-      <div className="flex-1 overflow-y-auto min-h-0">
+      {/* Terminal tab */}
+      {activeTab === "terminal" && (
+        <div ref={termRef} className="flex-1 min-h-0 p-1" />
+      )}
+
+      {/* Agent Body */}
+      {activeTab === "agent" && <div className="flex-1 overflow-y-auto min-h-0">
         {/* All commands overview */}
         {showAllCommands ? (
           <div className="p-3 space-y-3">
@@ -381,10 +500,10 @@ export default function AgentPanel() {
             <div ref={logEndRef} />
           </div>
         )}
-      </div>
+      </div>}
 
       {/* Active intent: inline slot form */}
-      {activeIntent && (
+      {activeTab === "agent" && activeIntent && (
         <div className="border-t border-slate-200 px-3 py-2.5 bg-slate-50 flex-shrink-0 space-y-2">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-1.5">
@@ -500,7 +619,7 @@ export default function AgentPanel() {
       )}
 
       {/* Input bar */}
-      {!activeIntent && (
+      {activeTab === "agent" && !activeIntent && (
         <div className="border-t border-slate-200 px-3 py-2 flex-shrink-0 relative">
           {/* Autocomplete */}
           {suggestions.length > 0 && (

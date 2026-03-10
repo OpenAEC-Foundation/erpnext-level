@@ -20,15 +20,15 @@ function buildApiUrl(path: string, queryString?: string): string {
 }
 
 export function getErpNextAppUrl(): string {
-  return localStorage.getItem("erpnext_url") || "https://3bm.prilk.cloud";
+  return localStorage.getItem("erpnext_url") || "";
 }
 
 function getApiKey(): string {
-  return localStorage.getItem("erpnext_api_key") || "9e2e953e4f88df5";
+  return localStorage.getItem("erpnext_api_key") || "";
 }
 
 function getApiSecret(): string {
-  return localStorage.getItem("erpnext_api_secret") || "4e5ffaaa308ba9d";
+  return localStorage.getItem("erpnext_api_secret") || "";
 }
 
 function getHeaders(): HeadersInit {

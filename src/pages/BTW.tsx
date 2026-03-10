@@ -1,5 +1,5 @@
 import { useEffect, useState, useMemo, useCallback } from "react";
-import { fetchList, fetchAll, getErpNextAppUrl } from "../lib/erpnext";
+import { fetchAll, getErpNextAppUrl } from "../lib/erpnext";
 import CompanySelect from "../components/CompanySelect";
 import {
   FileSpreadsheet,

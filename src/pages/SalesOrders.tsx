@@ -82,11 +82,7 @@ export default function SalesOrders() {
     );
   }, [orders, search]);
 
-  const companies = useMemo(() => {
-    const set = new Set<string>();
-    for (const o of orders) if (o.company) set.add(o.company);
-    return Array.from(set).sort();
-  }, [orders]);
+
 
   const totalValue = filtered.reduce((s, o) => s + o.net_total, 0);
 

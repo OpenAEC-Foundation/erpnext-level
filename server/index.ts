@@ -10,13 +10,27 @@
 
 import express from "express";
 import cors from "cors";
+import { createServer } from "http";
 import { existsSync } from "fs";
-import { join, resolve } from "path";
+import { join, resolve, dirname } from "path";
+import { fileURLToPath } from "url";
+import { WebSocketServer } from "ws";
+
+// In ESM (dev via tsx): derive __dirname from import.meta.url
+// In CJS (esbuild bundle for Electron): esbuild injects __dirname automatically
+// Use try/catch to handle both cases
+let _serverDir: string;
+try {
+  _serverDir = dirname(fileURLToPath(import.meta.url));
+} catch {
+  _serverDir = typeof __dirname !== "undefined" ? __dirname : process.cwd();
+}
 import { MultiCacheManager } from "./cache.js";
 import { matchesFilters, applyOrderBy, selectFields } from "./filter.js";
 import { getAllInstances, getInstance, proxyRequest, getConfigFilePath } from "./erpnext-client.js";
 import { handleAgentChat } from "./agent.js";
 import { readVault, writeVault, upsertVaultEntry, removeVaultEntry, getVaultFilePath, type VaultEntry } from "./vault.js";
+import { handleTerminalConnection } from "./terminal.js";
 
 const PORT = parseInt(process.env.PORT || "3001", 10);
 
@@ -24,12 +38,9 @@ const app = express();
 app.use(cors());
 app.use(express.json({ limit: "10mb" }));
 
-// Serve static frontend in production/electron mode
-const distDir = resolve(process.env.ERPNEXT_LEVEL_DIST || join(__dirname, "..", "dist"));
-if (existsSync(distDir)) {
-  console.log(`[server] Serving static files from ${distDir}`);
-  app.use(express.static(distDir));
-}
+// Static file serving is set up lazily in startServer() so that
+// ERPNEXT_LEVEL_DIST can be set by electron/main.ts before evaluation.
+let distDir = "";
 
 const multiCache = new MultiCacheManager(getAllInstances());
 
@@ -347,13 +358,7 @@ async function proxyAndRespond(req: express.Request, res: express.Response, inst
   }
 }
 
-/* ─── SPA fallback (must be after all API routes) ─── */
-
-if (existsSync(distDir)) {
-  app.get("*", (_req, res) => {
-    res.sendFile(join(distDir, "index.html"));
-  });
-}
+/* ─── SPA fallback is registered in startServer() after distDir is resolved ─── */
 
 /* ─── Config info endpoint ─── */
 
@@ -364,7 +369,7 @@ app.get("/api/config-path", (_req, res) => {
 /* ─── Start ─── */
 
 export async function startServer(port?: number): Promise<number> {
-  const listenPort = port || PORT;
+  const listenPort = port !== undefined ? port : PORT;
   const instances = getAllInstances();
   console.log(`[server] Config: ${getConfigFilePath()}`);
   console.log(`[server] Starting with ${instances.length} instance(s):`);
@@ -376,13 +381,37 @@ export async function startServer(port?: number): Promise<number> {
     console.log(`[server] No instances configured. Add them to the config file above.`);
   }
 
+  // Set up static file serving (lazy so ERPNEXT_LEVEL_DIST from electron is available)
+  distDir = resolve(process.env.ERPNEXT_LEVEL_DIST || join(_serverDir, "..", "dist"));
+  if (existsSync(distDir)) {
+    console.log(`[server] Serving static files from ${distDir}`);
+    app.use(express.static(distDir));
+    // SPA fallback — must be after all API routes
+    app.get("*", (_req, res) => {
+      res.sendFile(join(distDir, "index.html"));
+    });
+  }
+
   console.log("[server] Loading caches...");
   await multiCache.start();
 
+  // Create HTTP server from Express app
+  const server = createServer(app);
+
+  // Attach WebSocket server for terminal
+  const wss = new WebSocketServer({ server, path: "/ws/terminal" });
+  wss.on("connection", (ws, req) => {
+    const url = new URL(req.url || "/", "http://localhost");
+    const instanceId = url.searchParams.get("instance") || getAllInstances()[0]?.id || "3bm";
+    handleTerminalConnection(ws, instanceId);
+  });
+  console.log("[server] WebSocket terminal enabled at /ws/terminal");
+
   return new Promise((resolve) => {
-    app.listen(listenPort, () => {
-      console.log(`[server] Backend running on http://localhost:${listenPort}`);
-      resolve(listenPort);
+    server.listen(listenPort, () => {
+      const actualPort = (server.address() as { port: number }).port;
+      console.log(`[server] Backend running on http://localhost:${actualPort}`);
+      resolve(actualPort);
     });
   });
 }

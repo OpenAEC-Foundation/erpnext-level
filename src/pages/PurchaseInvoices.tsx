@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo } from "react";
+import { useEffect, useState } from "react";
 import { fetchCount, fetchList, getErpNextAppUrl } from "../lib/erpnext";
 import { ShoppingCart, RefreshCw, Filter, Plus } from "lucide-react";
 import InvoiceModal from "../components/InvoiceModal";
@@ -77,13 +77,7 @@ export default function PurchaseInvoices() {
     loadData();
   }, [businessUnit, fromDate, toDate]);
 
-  const businessUnits = useMemo(() => {
-    const units = new Set<string>();
-    for (const inv of invoices) {
-      if (inv.company) units.add(inv.company);
-    }
-    return Array.from(units).sort();
-  }, [invoices]);
+
 
   const totalOutstanding = invoices.reduce(
     (sum, inv) => sum + inv.outstanding_amount,

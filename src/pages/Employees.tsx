@@ -89,11 +89,6 @@ export default function Employees() {
     );
   }, [employees, search]);
 
-  const companies = useMemo(() => {
-    const set = new Set<string>();
-    for (const e of employees) if (e.company) set.add(e.company);
-    return Array.from(set).sort();
-  }, [employees]);
 
   const departments = useMemo(() => {
     const map = new Map<string, number>();

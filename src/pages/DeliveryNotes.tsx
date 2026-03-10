@@ -1,7 +1,7 @@
 import { useEffect, useState, useMemo } from "react";
 import { fetchList, getErpNextAppUrl } from "../lib/erpnext";
 import {
-  Truck, RefreshCw, Filter, Search, ExternalLink,
+  RefreshCw, Filter, Search, ExternalLink,
   Package, Clock, CheckCircle, DollarSign, Plus, ChevronDown,
 } from "lucide-react";
 import CompanySelect from "../components/CompanySelect";
@@ -78,11 +78,6 @@ export default function DeliveryNotes() {
     loadData();
   }, [company, statusFilter, fromDate, toDate]);
 
-  const companies = useMemo(() => {
-    const set = new Set<string>();
-    for (const n of notes) if (n.company) set.add(n.company);
-    return Array.from(set).sort();
-  }, [notes]);
 
   const filtered = useMemo(() => {
     if (!search.trim()) return notes;
