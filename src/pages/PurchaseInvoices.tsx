@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { fetchCount, fetchList, getErpNextAppUrl } from "../lib/erpnext";
+import { fetchCount, fetchList, getErpNextLinkUrl } from "../lib/erpnext";
 import { ShoppingCart, RefreshCw, Filter, Plus } from "lucide-react";
 import InvoiceModal from "../components/InvoiceModal";
 import CompanySelect from "../components/CompanySelect";
@@ -92,7 +92,7 @@ export default function PurchaseInvoices() {
         </h2>
         <div className="flex items-center gap-2">
           <a
-            href={`${getErpNextAppUrl()}/purchase-invoice/new`}
+            href={`${getErpNextLinkUrl()}/purchase-invoice/new`}
             target="_blank"
             rel="noopener noreferrer"
             className="flex items-center gap-2 px-4 py-2 bg-white border border-slate-200 text-slate-700 rounded-lg hover:bg-slate-50 cursor-pointer"

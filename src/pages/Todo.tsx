@@ -1,5 +1,5 @@
 import { useEffect, useState, useMemo } from "react";
-import { fetchList, getAuthHeaders, getErpNextAppUrl } from "../lib/erpnext";
+import { fetchList, updateDocument, createDocument, getErpNextLinkUrl } from "../lib/erpnext";
 import { useEmployees } from "../lib/DataContext";
 import {
   ListTodo, RefreshCw, Plus, CheckCircle2, Circle,
@@ -79,12 +79,7 @@ export default function Todo() {
   async function toggleStatus(todo: ToDo) {
     const newStatus = todo.status === "Open" ? "Closed" : "Open";
     try {
-      const baseUrl = localStorage.getItem("erpnext_url") || "";
-      await fetch(`${baseUrl}/api/resource/ToDo/${todo.name}`, {
-        method: "PUT",
-        headers: getAuthHeaders(),
-        body: JSON.stringify({ status: newStatus }),
-      });
+      await updateDocument("ToDo", todo.name, { status: newStatus });
       setTodos((prev) =>
         prev.map((t) => (t.name === todo.name ? { ...t, status: newStatus } : t))
       );
@@ -97,17 +92,12 @@ export default function Todo() {
     if (!newDesc.trim()) return;
     setSubmitting(true);
     try {
-      const baseUrl = localStorage.getItem("erpnext_url") || "";
-      await fetch(`${baseUrl}/api/resource/ToDo`, {
-        method: "POST",
-        headers: getAuthHeaders(),
-        body: JSON.stringify({
-          description: newDesc,
-          priority: newPriority,
-          status: "Open",
-          date: newDate || undefined,
-          allocated_to: newAllocatedTo || undefined,
-        }),
+      await createDocument("ToDo", {
+        description: newDesc,
+        priority: newPriority,
+        status: "Open",
+        date: newDate || undefined,
+        allocated_to: newAllocatedTo || undefined,
       });
       setNewDesc("");
       setNewPriority("Medium");
@@ -298,7 +288,7 @@ export default function Todo() {
                   )}
                   {todo.reference_type && todo.reference_name && (
                     <a
-                      href={`${getErpNextAppUrl()}/app/${todo.reference_type.toLowerCase().replace(/ /g, "-")}/${todo.reference_name}`}
+                      href={`${getErpNextLinkUrl()}/${todo.reference_type.toLowerCase().replace(/ /g, "-")}/${todo.reference_name}`}
                       target="_blank"
                       rel="noopener noreferrer"
                       className="text-xs text-3bm-teal hover:text-3bm-teal-dark flex items-center gap-0.5"

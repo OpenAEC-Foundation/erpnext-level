@@ -1,5 +1,5 @@
 import { useEffect, useState, useMemo } from "react";
-import { fetchList, getErpNextAppUrl } from "../lib/erpnext";
+import { fetchList, getErpNextLinkUrl } from "../lib/erpnext";
 import {
   RefreshCw, Filter, Search, ExternalLink,
   DollarSign, Clock, CheckCircle, FileText, Plus,
@@ -102,14 +102,14 @@ export default function Onkosten() {
         <h2 className="text-2xl font-bold text-slate-800">Onkostendeclaraties</h2>
         <div className="flex items-center gap-2">
           <a
-            href={`${getErpNextAppUrl()}/app/expense-claim/new`}
+            href={`${getErpNextLinkUrl()}/expense-claim/new`}
             target="_blank" rel="noopener noreferrer"
             className="flex items-center gap-2 px-3 py-2 text-sm text-white bg-3bm-teal rounded-lg hover:bg-3bm-teal-dark"
           >
             <Plus size={14} /> Nieuw
           </a>
           <a
-            href={`${getErpNextAppUrl()}/app/expense-claim?company=${encodeURIComponent(company)}`}
+            href={`${getErpNextLinkUrl()}/expense-claim?company=${encodeURIComponent(company)}`}
             target="_blank" rel="noopener noreferrer"
             className="flex items-center gap-2 px-3 py-2 text-sm text-slate-600 bg-white border border-slate-200 rounded-lg hover:bg-slate-50"
           >
@@ -215,7 +215,7 @@ export default function Onkosten() {
                 <tr key={claim.name} className="border-b border-slate-100 hover:bg-slate-50">
                   <td className="px-4 py-3 text-sm font-medium">
                     <a
-                      href={`${getErpNextAppUrl()}/app/expense-claim/${claim.name}`}
+                      href={`${getErpNextLinkUrl()}/expense-claim/${claim.name}`}
                       target="_blank" rel="noopener noreferrer"
                       className="text-3bm-teal hover:text-3bm-teal-dark hover:underline"
                     >

@@ -1,5 +1,5 @@
 import { useEffect, useState, useMemo } from "react";
-import { fetchAll, getErpNextAppUrl } from "../lib/erpnext";
+import { fetchAll, getErpNextLinkUrl } from "../lib/erpnext";
 import CompanySelect from "../components/CompanySelect";
 import {
   BookOpen,
@@ -426,7 +426,7 @@ export default function Jaarrekening() {
         </div>
         <div className="flex items-center gap-2">
           <a
-            href={`${getErpNextAppUrl()}/general-ledger?company=${encodeURIComponent(company)}`}
+            href={`${getErpNextLinkUrl()}/general-ledger?company=${encodeURIComponent(company)}`}
             target="_blank"
             rel="noopener noreferrer"
             className="flex items-center gap-2 px-3 py-2 text-sm text-slate-600 bg-white border border-slate-200 rounded-lg hover:bg-slate-50"

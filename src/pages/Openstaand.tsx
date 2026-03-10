@@ -1,5 +1,5 @@
 import { useEffect, useState, useMemo } from "react";
-import { fetchAll, getErpNextAppUrl } from "../lib/erpnext";
+import { fetchAll, getErpNextLinkUrl } from "../lib/erpnext";
 import {
   Clock, RefreshCw, Filter, ExternalLink, FileText, Users, Calculator,
 } from "lucide-react";
@@ -186,7 +186,7 @@ export default function Openstaand() {
         </div>
         <div className="flex items-center gap-2">
           <a
-            href={`${getErpNextAppUrl()}/sales-invoice?status=Unpaid&status=Overdue&company=${encodeURIComponent(company)}`}
+            href={`${getErpNextLinkUrl()}/sales-invoice?status=Unpaid&status=Overdue&company=${encodeURIComponent(company)}`}
             target="_blank"
             rel="noopener noreferrer"
             className="flex items-center gap-2 px-3 py-2 text-sm text-slate-600 bg-white border border-slate-200 rounded-lg hover:bg-slate-50"
@@ -393,7 +393,7 @@ export default function Openstaand() {
                   <tr key={inv.name} className="border-b border-slate-100 hover:bg-slate-50">
                     <td className="px-3 py-2.5 text-sm font-medium">
                       <a
-                        href={`${getErpNextAppUrl()}/sales-invoice/${inv.name}`}
+                        href={`${getErpNextLinkUrl()}/sales-invoice/${inv.name}`}
                         target="_blank"
                         rel="noopener noreferrer"
                         className="text-3bm-teal hover:text-3bm-teal-dark hover:underline"

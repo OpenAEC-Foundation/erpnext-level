@@ -1,6 +1,6 @@
 import { useEffect, useState, useMemo, useRef, useCallback } from "react";
-import { fetchList, fetchDocument, fetchAll, getErpNextAppUrl } from "../lib/erpnext";
-import { useProjects } from "../lib/DataContext";
+import { fetchList, fetchDocument, fetchAll, getErpNextLinkUrl } from "../lib/erpnext";
+import { useProjects, useCompanies } from "../lib/DataContext";
 import type { ProjectRecord } from "../lib/DataContext";
 import { geocodeAddress } from "../lib/geocode";
 import {
@@ -64,9 +64,36 @@ interface TaskRecord {
 
 /* ─── Constants ─── */
 
-// getErpNextAppUrl() is imported from erpnext.ts and reads the current instance URL
-const LOCAL_PROJECT_BASE = "C:/3BM/50_projecten/3_3BM_bouwtechniek";
+// getErpNextLinkUrl() is imported from erpnext.ts and reads the current instance URL
+/** NAS folder path per company */
+const COMPANY_FOLDER_MAP: Record<string, string> = {
+  "3BM": "C:/3BM/50_projecten/3_3BM_bouwtechniek",
+  "Symitech": "C:/Symitech/projecten",
+};
+const DEFAULT_PROJECT_BASE = "C:/3BM/50_projecten/3_3BM_bouwtechniek";
+
+function getProjectFolderPath(projectName: string, company?: string): string {
+  const base = (company && COMPANY_FOLDER_MAP[company]) || DEFAULT_PROJECT_BASE;
+  return `${base}/${projectName}`;
+}
+
+async function openFolder(folderPath: string) {
+  try {
+    await fetch("/api/open-folder", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path: folderPath }),
+    });
+  } catch (e) {
+    console.warn("Kon map niet openen:", e);
+    // Fallback: try file:/// link
+    window.open(`file:///${folderPath}`, "_blank");
+  }
+}
+
 const NL_CENTER: [number, number] = [52.1, 5.3];
+
+const PROJECT_STATUSES = ["Open", "Completed", "Cancelled", "Overdue"];
 
 const statusColors: Record<string, string> = {
   Open: "bg-3bm-teal/10 text-3bm-teal-dark",
@@ -266,7 +293,7 @@ function ProjectDetail({
             })}
           </div>
           <a
-            href={`${getErpNextAppUrl()}/project/${project.name}`}
+            href={`${getErpNextLinkUrl()}/project/${project.name}`}
             target="_blank"
             rel="noopener noreferrer"
             className="flex items-center gap-2 px-3 py-2 text-xs text-slate-500 hover:text-3bm-teal mt-4"
@@ -374,7 +401,7 @@ function ProjectDetail({
                           <tr key={t.name} className="border-b border-slate-100 hover:bg-slate-50">
                             <td className="px-4 py-2.5">
                               <a
-                                href={`${getErpNextAppUrl()}/task/${t.name}`}
+                                href={`${getErpNextLinkUrl()}/task/${t.name}`}
                                 target="_blank"
                                 rel="noopener noreferrer"
                                 className="text-sm text-3bm-teal hover:text-3bm-teal-dark hover:underline font-medium flex items-center gap-1"
@@ -516,7 +543,7 @@ function ProjectDetail({
                       return (
                         <div key={t.name} className="relative h-9 flex items-center px-2 hover:bg-slate-50">
                           <a
-                            href={`${getErpNextAppUrl()}/task/${t.name}`}
+                            href={`${getErpNextLinkUrl()}/task/${t.name}`}
                             target="_blank"
                             rel="noopener noreferrer"
                             className="absolute h-5 rounded-full flex items-center px-2 text-[10px] text-white font-medium truncate hover:opacity-80"
@@ -617,7 +644,7 @@ function ProjectMap({ projects }: { projects: ProjectRecord[] }) {
       <MapContainer
         center={NL_CENTER}
         zoom={8}
-        style={{ height: 400, width: "100%" }}
+        style={{ height: "calc(100vh - 280px)", minHeight: 500, width: "100%" }}
         scrollWheelZoom={true}
       >
         <TileLayer
@@ -629,7 +656,7 @@ function ProjectMap({ projects }: { projects: ProjectRecord[] }) {
             <Popup>
               <div className="text-sm">
                 <a
-                  href={`${getErpNextAppUrl()}/project/${m.projectName}`}
+                  href={`${getErpNextLinkUrl()}/project/${m.projectName}`}
                   target="_blank"
                   rel="noopener noreferrer"
                   className="font-bold text-blue-600 hover:underline"
@@ -651,12 +678,19 @@ function ProjectMap({ projects }: { projects: ProjectRecord[] }) {
 
 export default function Projects() {
   const storeProjects = useProjects();
+  const companies = useCompanies();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const [yearFilter, setYearFilter] = useState("");
+  const [companyFilter, setCompanyFilter] = useState("");
+  const [statusFilter, setStatusFilter] = useState("Open");
   const [selectedProject, setSelectedProject] = useState<ProjectRecord | null>(null);
   const [activeTab, setActiveTab] = useState<"lijst" | "kaart">("lijst");
+
+  type SortColumn = "name" | "project_name" | "company" | "status" | "percent_complete" | "expected_start_date" | "expected_end_date";
+  const [sortColumn, setSortColumn] = useState<SortColumn>("name");
+  const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
 
   // Store full hours map: project → employee → hours
   const [allProjectHours, setAllProjectHours] = useState<Map<string, Map<string, number>>>(new Map());
@@ -743,6 +777,12 @@ export default function Projects() {
 
   const filtered = useMemo(() => {
     let list = storeProjects;
+    if (statusFilter) {
+      list = list.filter((p) => p.status === statusFilter);
+    }
+    if (companyFilter) {
+      list = list.filter((p) => p.company === companyFilter);
+    }
     if (yearFilter) {
       list = list.filter(
         (p) => p.expected_start_date && p.expected_start_date.startsWith(yearFilter)
@@ -754,11 +794,34 @@ export default function Projects() {
         (p) =>
           p.name.toLowerCase().includes(q) ||
           p.project_name.toLowerCase().includes(q) ||
-          p.status.toLowerCase().includes(q)
+          p.status.toLowerCase().includes(q) ||
+          p.company?.toLowerCase().includes(q)
       );
     }
     return list;
-  }, [storeProjects, search, yearFilter]);
+  }, [storeProjects, search, yearFilter, companyFilter, statusFilter]);
+
+  const sorted = useMemo(() => {
+    const dir = sortDir === "asc" ? 1 : -1;
+    return [...filtered].sort((a, b) => {
+      const av = (a[sortColumn] ?? "") as string | number;
+      const bv = (b[sortColumn] ?? "") as string | number;
+      if (typeof av === "number" && typeof bv === "number") return (av - bv) * dir;
+      return String(av).localeCompare(String(bv), "nl") * dir;
+    });
+  }, [filtered, sortColumn, sortDir]);
+
+  function handleSort(col: SortColumn) {
+    if (sortColumn === col) {
+      setSortDir(d => d === "asc" ? "desc" : "asc");
+    } else {
+      setSortColumn(col);
+      setSortDir(col === "name" ? "desc" : "asc");
+    }
+  }
+
+  const sortIndicator = (col: SortColumn) =>
+    sortColumn === col ? (sortDir === "asc" ? " ▲" : " ▼") : "";
 
   return (
     <div className="p-6">
@@ -766,7 +829,7 @@ export default function Projects() {
         <h2 className="text-2xl font-bold text-slate-800">Projecten</h2>
         <div className="flex items-center gap-2">
           <a
-            href={`${getErpNextAppUrl()}/project/new`}
+            href={`${getErpNextLinkUrl()}/project/new`}
             target="_blank"
             rel="noopener noreferrer"
             className="flex items-center gap-2 px-4 py-2 bg-white border border-slate-200 text-slate-700 rounded-lg hover:bg-slate-50 cursor-pointer"
@@ -804,9 +867,29 @@ export default function Projects() {
           </div>
         </div>
         <select
+          value={companyFilter}
+          onChange={(e) => setCompanyFilter(e.target.value)}
+          className="px-4 py-3 bg-white border border-slate-200 rounded-xl shadow-sm text-sm focus:outline-none focus:ring-2 focus:ring-3bm-teal cursor-pointer"
+        >
+          <option value="">Alle bedrijven</option>
+          {companies.map((c) => (
+            <option key={c.name} value={c.name}>{c.company_name || c.name}</option>
+          ))}
+        </select>
+        <select
+          value={statusFilter}
+          onChange={(e) => setStatusFilter(e.target.value)}
+          className="px-4 py-3 bg-white border border-slate-200 rounded-xl shadow-sm text-sm focus:outline-none focus:ring-2 focus:ring-3bm-teal cursor-pointer"
+        >
+          <option value="">Alle statussen</option>
+          {PROJECT_STATUSES.map((s) => (
+            <option key={s} value={s}>{s}</option>
+          ))}
+        </select>
+        <select
           value={yearFilter}
           onChange={(e) => setYearFilter(e.target.value)}
-          className="px-4 py-3 bg-white border border-slate-200 rounded-xl shadow-sm text-sm focus:outline-none focus:ring-2 focus:ring-3bm-teal"
+          className="px-4 py-3 bg-white border border-slate-200 rounded-xl shadow-sm text-sm focus:outline-none focus:ring-2 focus:ring-3bm-teal cursor-pointer"
         >
           <option value="">Alle jaren</option>
           {availableYears.map((y) => (
@@ -855,31 +938,32 @@ export default function Projects() {
         <table className="w-full">
           <thead>
             <tr className="bg-slate-50 border-b border-slate-200">
-              <th className="text-left px-4 py-3 text-sm font-semibold text-slate-600">Projectnr</th>
-              <th className="text-left px-4 py-3 text-sm font-semibold text-slate-600">Naam</th>
+              <th onClick={() => handleSort("name")} className="text-left px-4 py-3 text-sm font-semibold text-slate-600 cursor-pointer hover:text-slate-900 select-none">Projectnr{sortIndicator("name")}</th>
+              <th onClick={() => handleSort("project_name")} className="text-left px-4 py-3 text-sm font-semibold text-slate-600 cursor-pointer hover:text-slate-900 select-none">Naam{sortIndicator("project_name")}</th>
+              <th onClick={() => handleSort("company")} className="text-left px-4 py-3 text-sm font-semibold text-slate-600 cursor-pointer hover:text-slate-900 select-none">Bedrijf{sortIndicator("company")}</th>
               <th className="text-left px-4 py-3 text-sm font-semibold text-slate-600">Meeste werk</th>
-              <th className="text-left px-4 py-3 text-sm font-semibold text-slate-600">Status</th>
-              <th className="text-right px-4 py-3 text-sm font-semibold text-slate-600">Voortgang</th>
-              <th className="text-left px-4 py-3 text-sm font-semibold text-slate-600">Startdatum</th>
-              <th className="text-left px-4 py-3 text-sm font-semibold text-slate-600">Einddatum</th>
+              <th onClick={() => handleSort("status")} className="text-left px-4 py-3 text-sm font-semibold text-slate-600 cursor-pointer hover:text-slate-900 select-none">Status{sortIndicator("status")}</th>
+              <th onClick={() => handleSort("percent_complete")} className="text-right px-4 py-3 text-sm font-semibold text-slate-600 cursor-pointer hover:text-slate-900 select-none">Voortgang{sortIndicator("percent_complete")}</th>
+              <th onClick={() => handleSort("expected_start_date")} className="text-left px-4 py-3 text-sm font-semibold text-slate-600 cursor-pointer hover:text-slate-900 select-none">Startdatum{sortIndicator("expected_start_date")}</th>
+              <th onClick={() => handleSort("expected_end_date")} className="text-left px-4 py-3 text-sm font-semibold text-slate-600 cursor-pointer hover:text-slate-900 select-none">Einddatum{sortIndicator("expected_end_date")}</th>
               <th className="text-center px-4 py-3 text-sm font-semibold text-slate-600">Map</th>
             </tr>
           </thead>
           <tbody>
             {loading ? (
               <tr>
-                <td colSpan={8} className="px-4 py-8 text-center text-slate-400">
+                <td colSpan={9} className="px-4 py-8 text-center text-slate-400">
                   Laden...
                 </td>
               </tr>
-            ) : filtered.length === 0 ? (
+            ) : sorted.length === 0 ? (
               <tr>
-                <td colSpan={8} className="px-4 py-8 text-center text-slate-400">
+                <td colSpan={9} className="px-4 py-8 text-center text-slate-400">
                   {search ? "Geen projecten gevonden" : "Geen projecten"}
                 </td>
               </tr>
             ) : (
-              filtered.map((p) => {
+              sorted.map((p) => {
                 const worker = topWorkers.get(p.name);
                 return (
                   <tr
@@ -895,6 +979,9 @@ export default function Projects() {
                     </td>
                     <td className="px-4 py-3 text-sm text-slate-700">
                       {p.project_name}
+                    </td>
+                    <td className="px-4 py-3 text-sm text-slate-500">
+                      {p.company || "-"}
                     </td>
                     <td className="px-4 py-3">
                       {worker ? (
@@ -941,14 +1028,13 @@ export default function Projects() {
                       {p.expected_end_date || "-"}
                     </td>
                     <td className="px-4 py-3 text-center">
-                      <a
-                        href={`file:///${LOCAL_PROJECT_BASE}/${p.name}`}
-                        title={`${LOCAL_PROJECT_BASE}/${p.name}`}
-                        onClick={(e) => e.stopPropagation()}
-                        className="inline-flex items-center justify-center p-1.5 text-slate-400 hover:text-3bm-teal hover:bg-slate-100 rounded-lg transition-colors"
+                      <button
+                        title={getProjectFolderPath(p.name, p.company)}
+                        onClick={(e) => { e.stopPropagation(); openFolder(getProjectFolderPath(p.name, p.company)); }}
+                        className="inline-flex items-center justify-center p-1.5 text-slate-400 hover:text-3bm-teal hover:bg-slate-100 rounded-lg transition-colors cursor-pointer"
                       >
                         <FolderOpen size={16} />
-                      </a>
+                      </button>
                     </td>
                   </tr>
                 );

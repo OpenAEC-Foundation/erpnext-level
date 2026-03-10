@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/electron-userland/electron-builder/master/packages/app-builder-lib/scheme.json",
-  "appId": "foundation.openaec.erpnext-level",
-  "productName": "ERPNext Level",
+  "appId": "foundation.openaec.y-app",
+  "productName": "Y-app",
   "copyright": "Copyright © 2024 OpenAEC Foundation",
   "directories": {
     "output": "release",
@@ -33,7 +33,7 @@
       }
     ],
     "icon": "build-resources/icon.png",
-    "artifactName": "ERPNext-Level-${version}-Setup.${ext}"
+    "artifactName": "Y-app-${version}-Setup.${ext}"
   },
   "nsis": {
     "oneClick": false,
@@ -41,9 +41,9 @@
     "allowToChangeInstallationDirectory": true,
     "createDesktopShortcut": true,
     "createStartMenuShortcut": true,
-    "shortcutName": "ERPNext Level"
+    "shortcutName": "Y-app"
   },
   "portable": {
-    "artifactName": "ERPNext-Level-${version}-Portable.${ext}"
+    "artifactName": "Y-app-${version}-Portable.${ext}"
   }
 }

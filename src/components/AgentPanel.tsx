@@ -284,7 +284,7 @@ export default function AgentPanel() {
     }
 
     terminal.writeln("\x1b[1;36m╔══════════════════════════════════════════╗\x1b[0m");
-    terminal.writeln(`\x1b[1;36m║\x1b[0m  ERPNext Level Terminal                  \x1b[1;36m║\x1b[0m`);
+    terminal.writeln(`\x1b[1;36m║\x1b[0m  Y-app Terminal                          \x1b[1;36m║\x1b[0m`);
     terminal.writeln(`\x1b[1;36m║\x1b[0m  Instance: \x1b[1;33m${(instance.name || instanceId).padEnd(28)}\x1b[0m \x1b[1;36m║\x1b[0m`);
     terminal.writeln("\x1b[1;36m╚══════════════════════════════════════════╝\x1b[0m");
     terminal.writeln("\x1b[90mVerbinden...\x1b[0m\n");

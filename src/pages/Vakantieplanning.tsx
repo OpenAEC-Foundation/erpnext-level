@@ -1,10 +1,10 @@
 import { useEffect, useState, useMemo, useRef } from "react";
-import { fetchList, getErpNextAppUrl } from "../lib/erpnext";
+import { fetchList, getErpNextLinkUrl } from "../lib/erpnext";
 import CompanySelect from "../components/CompanySelect";
 import { HOLIDAYS } from "../lib/holidays";
 import {
   CalendarCheck, RefreshCw, Search, Filter, ExternalLink,
-  CheckCircle2, Clock, XCircle, CalendarDays, ZoomIn, ZoomOut, RotateCcw,
+  CheckCircle2, Clock, XCircle, CalendarDays, ZoomIn, ZoomOut, RotateCcw, Users,
 } from "lucide-react";
 
 interface LeaveApplication {
@@ -14,6 +14,17 @@ interface LeaveApplication {
   from_date: string;
   to_date: string;
   total_leave_days: number;
+  status: string;
+  company: string;
+}
+
+interface ShiftAssignment {
+  name: string;
+  employee: string;
+  employee_name: string;
+  shift_type: string;
+  start_date: string;
+  end_date: string;
   status: string;
   company: string;
 }
@@ -62,7 +73,9 @@ export default function Vakantieplanning() {
   const [year, setYear] = useState(new Date().getFullYear());
   const [statusFilter, setStatusFilter] = useState("");
   const [company, setCompany] = useState(localStorage.getItem("erpnext_default_company") || "");
-  const [activeTab, setActiveTab] = useState<"kalender" | "aanvragen">("kalender");
+  const [activeTab, setActiveTab] = useState<"kalender" | "aanvragen" | "rooster">("kalender");
+  const [shifts, setShifts] = useState<ShiftAssignment[]>([]);
+  const [shiftsLoading, setShiftsLoading] = useState(false);
 
   async function loadData() {
     setLoading(true);
@@ -92,8 +105,36 @@ export default function Vakantieplanning() {
     }
   }
 
+  async function loadShifts() {
+    setShiftsLoading(true);
+    try {
+      const filters: unknown[][] = [
+        ["status", "=", "Active"],
+        ["start_date", "<=", `${year}-12-31`],
+        ["end_date", ">=", `${year}-01-01`],
+      ];
+      if (company) filters.push(["company", "=", company]);
+
+      const list = await fetchList<ShiftAssignment>("Shift Assignment", {
+        fields: [
+          "name", "employee", "employee_name", "shift_type",
+          "start_date", "end_date", "status", "company",
+        ],
+        filters,
+        limit_page_length: 0,
+        order_by: "start_date asc",
+      });
+      setShifts(list);
+    } catch {
+      setShifts([]);
+    } finally {
+      setShiftsLoading(false);
+    }
+  }
+
   useEffect(() => {
     loadData();
+    loadShifts();
   }, [year, statusFilter, company]);
 
   const filtered = useMemo(() => {
@@ -111,6 +152,20 @@ export default function Vakantieplanning() {
     }
     return Array.from(map.entries()).sort((a, b) => a[0].localeCompare(b[0]));
   }, [filtered]);
+
+  // Group shifts by employee for rooster
+  const employeeShifts = useMemo(() => {
+    const q = search.toLowerCase();
+    const filteredShifts = search.trim()
+      ? shifts.filter((s) => s.employee_name.toLowerCase().includes(q))
+      : shifts;
+    const map = new Map<string, ShiftAssignment[]>();
+    for (const s of filteredShifts) {
+      if (!map.has(s.employee_name)) map.set(s.employee_name, []);
+      map.get(s.employee_name)!.push(s);
+    }
+    return Array.from(map.entries()).sort((a, b) => a[0].localeCompare(b[0]));
+  }, [shifts, search]);
 
   // KPI counts
   const totalCount = filtered.length;
@@ -253,10 +308,32 @@ export default function Vakantieplanning() {
           <CalendarCheck size={16} />
           Aanvragen
         </button>
+        <button
+          onClick={() => setActiveTab("rooster")}
+          className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors cursor-pointer ${
+            activeTab === "rooster"
+              ? "bg-3bm-teal text-white"
+              : "bg-white text-slate-600 hover:bg-slate-50 border border-slate-200"
+          }`}
+        >
+          <Users size={16} />
+          Rooster
+        </button>
       </div>
 
       {/* Content */}
-      {loading ? (
+      {activeTab === "rooster" ? (
+        shiftsLoading ? (
+          <div className="flex items-center justify-center py-16 text-slate-400">Laden...</div>
+        ) : (
+          <RoosterView
+            employeeShifts={employeeShifts}
+            year={year}
+            totalDays={totalDays}
+            monthPositions={monthPositions}
+          />
+        )
+      ) : loading ? (
         <div className="flex items-center justify-center py-16 text-slate-400">Laden...</div>
       ) : activeTab === "kalender" ? (
         <CalendarView
@@ -599,6 +676,329 @@ function CalendarView({
   );
 }
 
+/* ──────────── Rooster View ──────────── */
+
+interface ShiftSummary {
+  from_date: string;
+  to_date: string;
+  shift_type: string;
+  total_shifts: number;
+  avg_days_per_week: number;
+}
+
+function summarizeShifts(shiftList: ShiftAssignment[]): ShiftSummary[] {
+  const groups = new Map<string, ShiftAssignment[]>();
+  for (const s of shiftList) {
+    if (!groups.has(s.shift_type)) groups.set(s.shift_type, []);
+    groups.get(s.shift_type)!.push(s);
+  }
+
+  const summaries: ShiftSummary[] = [];
+
+  for (const [shiftType, group] of groups) {
+    const sorted = [...group].sort((a, b) => a.start_date.localeCompare(b.start_date));
+    const from_date = sorted[0].start_date;
+    const to_date = sorted[sorted.length - 1].end_date;
+
+    let totalShiftDays = 0;
+    for (const s of sorted) {
+      const start = new Date(s.start_date);
+      const end = new Date(s.end_date);
+      const diff = Math.floor((end.getTime() - start.getTime()) / 86400000) + 1;
+      totalShiftDays += diff;
+    }
+
+    const spanStart = new Date(from_date);
+    const spanEnd = new Date(to_date);
+    const spanDays = Math.floor((spanEnd.getTime() - spanStart.getTime()) / 86400000) + 1;
+    const spanWeeks = Math.max(1, spanDays / 7);
+
+    summaries.push({
+      from_date,
+      to_date,
+      shift_type: shiftType,
+      total_shifts: totalShiftDays,
+      avg_days_per_week: Math.round((totalShiftDays / spanWeeks) * 10) / 10,
+    });
+  }
+
+  return summaries;
+}
+
+function getShiftColor(shiftType: string): string {
+  if (shiftType.includes("8")) return "bg-indigo-500";
+  if (shiftType.includes("4")) return "bg-blue-400";
+  return "bg-indigo-500";
+}
+
+function RoosterView({
+  employeeShifts,
+  year,
+  totalDays,
+  monthPositions,
+}: {
+  employeeShifts: [string, ShiftAssignment[]][];
+  year: number;
+  totalDays: number;
+  monthPositions: { left: number; width: number }[];
+}) {
+  const [tooltip, setTooltip] = useState<{
+    summary: ShiftSummary;
+    employeeName: string;
+    x: number;
+    y: number;
+  } | null>(null);
+
+  const [holidayTooltip, setHolidayTooltip] = useState<{
+    name: string;
+    x: number;
+    y: number;
+  } | null>(null);
+
+  const [zoom, setZoom] = useState(1);
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
+
+  // Ctrl+scroll zoom
+  useEffect(() => {
+    const el = scrollContainerRef.current;
+    if (!el) return;
+
+    function handleWheel(e: WheelEvent) {
+      if (e.ctrlKey) {
+        e.preventDefault();
+        e.stopPropagation();
+        setZoom((z) => Math.min(3, Math.max(0.5, z - e.deltaY * 0.001)));
+      }
+    }
+
+    el.addEventListener("wheel", handleWheel, { passive: false });
+    return () => el.removeEventListener("wheel", handleWheel);
+  }, []);
+
+  // Block browser Ctrl+scroll zoom over calendar
+  useEffect(() => {
+    const el = scrollContainerRef.current;
+    if (!el) return;
+
+    function handleDocumentWheel(e: WheelEvent) {
+      if (!e.ctrlKey) return;
+      const rect = el!.getBoundingClientRect();
+      if (
+        e.clientX >= rect.left &&
+        e.clientX <= rect.right &&
+        e.clientY >= rect.top &&
+        e.clientY <= rect.bottom
+      ) {
+        e.preventDefault();
+      }
+    }
+
+    document.addEventListener("wheel", handleDocumentWheel, { passive: false });
+    return () => document.removeEventListener("wheel", handleDocumentWheel);
+  }, []);
+
+  // Holiday positions
+  const holidayPositions = useMemo(() => {
+    const holidays = HOLIDAYS[year] || [];
+    return holidays.map((h) => {
+      const day = dayOfYear(h.date, year);
+      const left = (day / totalDays) * 100;
+      return { ...h, left };
+    });
+  }, [year, totalDays]);
+
+  const employeesWithShifts = employeeShifts.length;
+
+  if (employeeShifts.length === 0) {
+    return (
+      <div className="flex items-center justify-center py-16 text-slate-400">
+        Geen roostergegevens gevonden voor dit jaar
+      </div>
+    );
+  }
+
+  return (
+    <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
+      {/* Legend */}
+      <div className="px-4 py-2 border-b border-slate-200 flex items-center gap-4 text-xs text-slate-500">
+        <span className="flex items-center gap-1.5">
+          <span className="w-3 h-3 rounded bg-indigo-500 inline-block" /> 8 uur
+        </span>
+        <span className="flex items-center gap-1.5">
+          <span className="w-3 h-3 rounded bg-blue-400 inline-block" /> 4 uur
+        </span>
+        <span className="flex items-center gap-1.5">
+          <span className="w-0.5 h-3 border-l-2 border-dashed border-red-400 inline-block" /> Feestdag
+        </span>
+        <span className="ml-auto text-slate-400">{employeesWithShifts} medewerkers met rooster</span>
+      </div>
+
+      {/* Zoom controls */}
+      <div className="px-4 py-1.5 border-b border-slate-100 flex items-center gap-3 text-xs text-slate-500">
+        <span className="flex items-center gap-1.5">
+          <ZoomIn size={14} />
+          Zoom: {Math.round(zoom * 100)}%
+        </span>
+        <button
+          onClick={() => setZoom((z) => Math.min(3, z + 0.25))}
+          className="px-2 py-0.5 bg-slate-100 hover:bg-slate-200 rounded text-xs cursor-pointer"
+          title="Inzoomen"
+        >
+          <ZoomIn size={12} />
+        </button>
+        <button
+          onClick={() => setZoom((z) => Math.max(0.5, z - 0.25))}
+          className="px-2 py-0.5 bg-slate-100 hover:bg-slate-200 rounded text-xs cursor-pointer"
+          title="Uitzoomen"
+        >
+          <ZoomOut size={12} />
+        </button>
+        <button
+          onClick={() => setZoom(1)}
+          className="px-2 py-0.5 bg-slate-100 hover:bg-slate-200 rounded text-xs cursor-pointer flex items-center gap-1"
+          title="Zoom resetten"
+        >
+          <RotateCcw size={12} />
+          Reset
+        </button>
+        <span className="text-slate-400 ml-1">Ctrl+Scroll om te zoomen</span>
+      </div>
+
+      <div className="overflow-x-auto" ref={scrollContainerRef}>
+        <div style={{ minWidth: `${900 * zoom}px` }}>
+          {/* Month headers */}
+          <div className="flex border-b border-slate-200">
+            <div className="w-48 flex-shrink-0 px-4 py-2 bg-slate-50 text-xs font-semibold text-slate-500">
+              Medewerker
+            </div>
+            <div className="flex-1 relative h-8">
+              {monthPositions.map((pos, i) => (
+                <div
+                  key={i}
+                  className="absolute top-0 h-full flex items-center justify-center text-xs font-medium text-slate-500 border-l border-slate-100"
+                  style={{ left: `${pos.left}%`, width: `${pos.width}%` }}
+                >
+                  {MONTHS[i]}
+                </div>
+              ))}
+              {holidayPositions.map((h) => (
+                <div
+                  key={h.date}
+                  className="absolute bottom-0.5 w-1.5 h-1.5 rounded-full bg-red-400"
+                  style={{ left: `${h.left}%`, transform: "translateX(-50%)" }}
+                  title={h.name}
+                />
+              ))}
+            </div>
+          </div>
+
+          {/* Employee rows */}
+          {employeeShifts.map(([name, employeeShiftList]) => {
+            const summaries = summarizeShifts(employeeShiftList);
+            return (
+              <div key={name} className="flex border-b border-slate-100 hover:bg-slate-50/50">
+                <div className="w-48 flex-shrink-0 px-4 py-2 text-sm font-medium text-slate-700 truncate">
+                  {name}
+                </div>
+                <div className="flex-1 relative h-10">
+                  {/* Month grid lines */}
+                  {monthPositions.map((pos, i) => (
+                    <div
+                      key={i}
+                      className="absolute top-0 h-full border-l border-slate-100"
+                      style={{ left: `${pos.left}%` }}
+                    />
+                  ))}
+                  {/* Holiday vertical markers */}
+                  {holidayPositions.map((h) => (
+                    <div
+                      key={h.date}
+                      className="absolute top-0 h-full border-l-[1.5px] border-dashed border-red-300 z-[1] cursor-help"
+                      style={{ left: `${h.left}%` }}
+                      onMouseEnter={(e) => {
+                        const rect = e.currentTarget.getBoundingClientRect();
+                        setHolidayTooltip({
+                          name: h.name,
+                          x: rect.left + rect.width / 2,
+                          y: rect.top,
+                        });
+                      }}
+                      onMouseLeave={() => setHolidayTooltip(null)}
+                    />
+                  ))}
+                  {/* Shift bars */}
+                  {summaries.map((summary, idx) => {
+                    const fromDay = Math.max(0, dayOfYear(summary.from_date, year));
+                    const toDay = Math.min(totalDays - 1, dayOfYear(summary.to_date, year));
+                    const left = (fromDay / totalDays) * 100;
+                    const width = Math.max(0.3, ((toDay - fromDay + 1) / totalDays) * 100);
+
+                    return (
+                      <div
+                        key={`${summary.shift_type}-${idx}`}
+                        className={`absolute top-1.5 h-7 rounded-sm ${getShiftColor(summary.shift_type)} opacity-80 hover:opacity-100 cursor-pointer transition-opacity z-[2] flex items-center overflow-hidden`}
+                        style={{ left: `${left}%`, width: `${width}%`, minWidth: "3px" }}
+                        onMouseEnter={(e) => {
+                          const rect = e.currentTarget.getBoundingClientRect();
+                          setTooltip({
+                            summary,
+                            employeeName: name,
+                            x: rect.left + rect.width / 2,
+                            y: rect.top,
+                          });
+                        }}
+                        onMouseLeave={() => setTooltip(null)}
+                      >
+                        <span className="text-[10px] text-white px-1 truncate whitespace-nowrap">
+                          {summary.shift_type} — ~{summary.avg_days_per_week}d/w
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Shift tooltip */}
+      {tooltip && (
+        <div
+          className="fixed z-50 bg-slate-800 text-white text-xs rounded-lg px-3 py-2 shadow-lg pointer-events-none"
+          style={{
+            left: tooltip.x,
+            top: tooltip.y - 8,
+            transform: "translate(-50%, -100%)",
+          }}
+        >
+          <p className="font-semibold">{tooltip.employeeName}</p>
+          <p>{tooltip.summary.shift_type}</p>
+          <p>
+            {tooltip.summary.from_date} — {tooltip.summary.to_date}
+          </p>
+          <p>Totaal: {tooltip.summary.total_shifts} dagen</p>
+          <p>Gem: ~{tooltip.summary.avg_days_per_week} dagen/week</p>
+        </div>
+      )}
+
+      {/* Holiday tooltip */}
+      {holidayTooltip && (
+        <div
+          className="fixed z-50 bg-red-700 text-white text-xs rounded-lg px-3 py-1.5 shadow-lg pointer-events-none"
+          style={{
+            left: holidayTooltip.x,
+            top: holidayTooltip.y - 8,
+            transform: "translate(-50%, -100%)",
+          }}
+        >
+          <p className="font-semibold">{holidayTooltip.name}</p>
+        </div>
+      )}
+    </div>
+  );
+}
+
 /* ──────────── Aanvragen View ──────────── */
 
 function AanvragenView({ leaves }: { leaves: LeaveApplication[] }) {
@@ -645,7 +1045,7 @@ function AanvragenView({ leaves }: { leaves: LeaveApplication[] }) {
               </td>
               <td className="px-4 py-3">
                 <a
-                  href={`${getErpNextAppUrl()}/leave-application/${l.name}`}
+                  href={`${getErpNextLinkUrl()}/leave-application/${l.name}`}
                   target="_blank"
                   rel="noopener noreferrer"
                   className="text-3bm-teal hover:text-3bm-teal-dark"

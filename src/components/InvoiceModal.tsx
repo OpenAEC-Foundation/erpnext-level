@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { fetchAttachments, type FileInfo } from "../lib/erpnext";
+import { fetchAttachments, getErpNextLinkUrl, type FileInfo } from "../lib/erpnext";
 import { X, Paperclip, FileText, Download, ExternalLink } from "lucide-react";
 
 interface InvoiceModalProps {
@@ -40,8 +40,7 @@ export default function InvoiceModal({
     return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
   }
 
-  const baseUrl = localStorage.getItem("erpnext_url") || "https://3bm.prilk.cloud";
-  const erpnextUrl = `${baseUrl}/app/${doctype.toLowerCase().replace(/ /g, "-")}/${name}`;
+  const erpnextUrl = `${getErpNextLinkUrl()}/${doctype.toLowerCase().replace(/ /g, "-")}/${name}`;
 
   return (
     <div

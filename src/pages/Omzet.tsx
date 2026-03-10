@@ -1,5 +1,5 @@
 import { useEffect, useState, useMemo } from "react";
-import { fetchAll, getErpNextAppUrl } from "../lib/erpnext";
+import { fetchAll, getErpNextLinkUrl } from "../lib/erpnext";
 import {
   TrendingUp, RefreshCw, Filter, ExternalLink, BarChart3, Hash,
 } from "lucide-react";
@@ -142,7 +142,7 @@ export default function Omzet() {
         </div>
         <div className="flex items-center gap-2">
           <a
-            href={`${getErpNextAppUrl()}/sales-invoice`}
+            href={`${getErpNextLinkUrl()}/sales-invoice`}
             target="_blank"
             rel="noopener noreferrer"
             className="flex items-center gap-2 px-3 py-2 text-sm text-slate-600 bg-white border border-slate-200 rounded-lg hover:bg-slate-50"

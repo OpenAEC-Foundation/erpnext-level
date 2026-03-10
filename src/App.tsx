@@ -14,7 +14,6 @@ import Projects from "./pages/Projects";
 import Tasks from "./pages/Tasks";
 import Planning from "./pages/Planning";
 import Employees from "./pages/Employees";
-import Email from "./pages/Email";
 import Omzet from "./pages/Omzet";
 import Openstaand from "./pages/Openstaand";
 import Kosteninzicht from "./pages/Kosteninzicht";
@@ -30,6 +29,17 @@ import Todo from "./pages/Todo";
 import FinancieelDashboard from "./pages/FinancieelDashboard";
 import Dashboard from "./pages/Dashboard";
 import Rendabiliteit from "./pages/Rendabiliteit";
+import NextCloudFiles from "./pages/NextCloudFiles";
+import NextCloudTalk from "./pages/NextCloudTalk";
+import Webmail from "./pages/Webmail";
+import Subtasks from "./pages/Subtasks";
+import Grootboeken from "./pages/Grootboeken";
+import Banktransacties from "./pages/Banktransacties";
+import Boekingsprogramma from "./pages/Boekingsprogramma";
+import Wiki from "./pages/Wiki";
+import Agenda from "./pages/Agenda";
+import Passwords from "./pages/Passwords";
+import Messenger from "./pages/Messenger";
 
 function App() {
   const [page, setPage] = useState<Page>("dashboard");
@@ -64,14 +74,13 @@ function App() {
 
   return (
     <div className="flex flex-col h-screen bg-slate-100">
-      <InstanceBar
-        onSwitch={handleInstanceSwitch}
-        onRefresh={() => setInstanceKey(getActiveInstanceId() + "-" + Date.now())}
-        viewMode={viewMode}
-        onViewModeChange={handleViewModeChange}
-      />
-
       <DataProvider key={instanceKey}>
+        <InstanceBar
+          onSwitch={handleInstanceSwitch}
+          onRefresh={() => setInstanceKey(getActiveInstanceId() + "-" + Date.now())}
+          viewMode={viewMode}
+          onViewModeChange={handleViewModeChange}
+        />
         <div className="flex flex-1 min-h-0">
           <Sidebar
             activePage={page}
@@ -88,9 +97,10 @@ function App() {
               {page === "salesorders" && <SalesOrders />}
               {page === "projects" && <Projects />}
               {page === "tasks" && <Tasks />}
+              {page === "subtasks" && <Subtasks />}
               {page === "planning" && <Planning />}
+              {page === "calendar" && <Agenda />}
               {page === "employees" && <Employees />}
-              {page === "email" && <Email />}
               {page === "financieel-dashboard" && <FinancieelDashboard />}
               {page === "omzet" && <Omzet />}
               {page === "openstaand" && <Openstaand />}
@@ -103,8 +113,17 @@ function App() {
               {page === "timesheets" && <Timesheets />}
               {page === "vakantieplanning" && <Vakantieplanning />}
               {page === "rendabiliteit" && <Rendabiliteit />}
+              {page === "webmail" && <Webmail />}
+              {page === "nextcloud-files" && <NextCloudFiles />}
+              {page === "nextcloud-talk" && <NextCloudTalk />}
+              {page === "grootboeken" && <Grootboeken />}
+              {page === "banktransacties" && <Banktransacties />}
+              {page === "boekingsprogramma" && <Boekingsprogramma />}
               {page === "settings" && <SettingsPage />}
               {page === "todo" && <Todo />}
+              {page === "wiki" && <Wiki />}
+              {page === "passwords" && <Passwords />}
+              {page === "messenger" && <Messenger />}
             </main>
           </div>
           {viewMode === "werkgever" && <AgentPanel />}

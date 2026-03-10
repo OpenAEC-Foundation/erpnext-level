@@ -1,5 +1,5 @@
 import { useEffect, useState, useMemo } from "react";
-import { fetchList, getErpNextAppUrl } from "../lib/erpnext";
+import { fetchList, getErpNextLinkUrl } from "../lib/erpnext";
 import {
   RefreshCw, Filter, Search, ExternalLink,
   Package, Clock, CheckCircle, DollarSign, Plus, ChevronDown,
@@ -101,7 +101,7 @@ export default function DeliveryNotes() {
         <h2 className="text-2xl font-bold text-slate-800">Leveringen</h2>
         <div className="flex items-center gap-2">
           <a
-            href={`${getErpNextAppUrl()}/delivery-note/new`}
+            href={`${getErpNextLinkUrl()}/delivery-note/new`}
             target="_blank"
             rel="noopener noreferrer"
             className="flex items-center gap-2 px-4 py-2 bg-white border border-slate-200 text-slate-700 rounded-lg hover:bg-slate-50 cursor-pointer"
@@ -110,7 +110,7 @@ export default function DeliveryNotes() {
             Nieuw
           </a>
           <a
-            href={`${getErpNextAppUrl()}/delivery-note?company=${encodeURIComponent(company)}`}
+            href={`${getErpNextLinkUrl()}/delivery-note?company=${encodeURIComponent(company)}`}
             target="_blank" rel="noopener noreferrer"
             className="flex items-center gap-2 px-3 py-2 text-sm text-slate-600 bg-white border border-slate-200 rounded-lg hover:bg-slate-50"
           >
@@ -247,7 +247,7 @@ export default function DeliveryNotes() {
                 <tr key={note.name} className="border-b border-slate-100 hover:bg-slate-50">
                   <td className="px-4 py-3 text-sm font-medium">
                     <a
-                      href={`${getErpNextAppUrl()}/delivery-note/${note.name}`}
+                      href={`${getErpNextLinkUrl()}/delivery-note/${note.name}`}
                       target="_blank" rel="noopener noreferrer"
                       className="text-3bm-teal hover:text-3bm-teal-dark hover:underline"
                     >

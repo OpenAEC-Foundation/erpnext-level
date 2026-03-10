@@ -15,6 +15,7 @@ import { existsSync } from "fs";
 import { join, resolve, dirname } from "path";
 import { fileURLToPath } from "url";
 import { WebSocketServer } from "ws";
+import { exec } from "child_process";
 
 // In ESM (dev via tsx): derive __dirname from import.meta.url
 // In CJS (esbuild bundle for Electron): esbuild injects __dirname automatically
@@ -30,7 +31,11 @@ import { matchesFilters, applyOrderBy, selectFields } from "./filter.js";
 import { getAllInstances, getInstance, proxyRequest, getConfigFilePath } from "./erpnext-client.js";
 import { handleAgentChat } from "./agent.js";
 import { readVault, writeVault, upsertVaultEntry, removeVaultEntry, getVaultFilePath, type VaultEntry } from "./vault.js";
+import { readPasswords, upsertPasswordEntry, removePasswordEntry, importPasswords, type PasswordEntry } from "./passwords.js";
 import { handleTerminalConnection } from "./terminal.js";
+import { mailTestConnection, mailListFolders, mailListMessages, mailGetMessage, mailGetAttachment, mailSend, mailDeleteMessage, mailMoveMessage, mailCreateFolder, mailWarmup, mailCacheStats, mailMarkUnread, mailRenameFolder, mailAutoConfig } from "./mail.js";
+import { nextcloudListFiles, nextcloudDownloadUrl, nextcloudDownload, nextcloudUpload } from "./nextcloud.js";
+import { messengerListConversations, messengerGetMessages, messengerSendMessage, messengerMarkRead } from "./messenger.js";
 
 const PORT = parseInt(process.env.PORT || "3001", 10);
 
@@ -68,6 +73,81 @@ app.get("/api/instances", (_req, res) => {
       url: i.url,
     })),
   });
+});
+
+/* ─── Instance service credentials ─── */
+
+app.get("/api/instances/:id/services", (req, res) => {
+  try {
+    const entries = readVault();
+    const entry = entries.find(e => e.id === req.params.id);
+    if (!entry) return res.json({ data: {} });
+    // Return service configs only, NOT ERPNext API credentials
+    res.json({
+      data: {
+        nextcloud: entry.nextcloudUrl ? {
+          url: entry.nextcloudUrl,
+          user: entry.nextcloudUser || "",
+          pass: entry.nextcloudPass || "",
+        } : null,
+        mail: entry.mailHost ? {
+          host: entry.mailHost,
+          port: entry.mailPort || 993,
+          user: entry.mailUser || "",
+          pass: entry.mailPass || "",
+          secure: entry.mailSecure !== false,
+          smtpHost: entry.smtpHost || "",
+          smtpPort: entry.smtpPort || 587,
+          smtpUser: entry.smtpUser || "",
+          smtpPass: entry.smtpPass || "",
+        } : null,
+        telegram: entry.telegramBotToken ? {
+          token: entry.telegramBotToken,
+        } : null,
+        whatsapp: entry.whatsappEnabled ? { enabled: true } : null,
+      },
+    });
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+app.post("/api/instances/:id/services", (req, res) => {
+  try {
+    const entries = readVault();
+    const idx = entries.findIndex(e => e.id === req.params.id);
+    if (idx < 0) return res.status(404).json({ error: "Instance not found in vault" });
+
+    const services = req.body as Record<string, any>;
+    // Merge service fields into the vault entry
+    if (services.nextcloud) {
+      entries[idx].nextcloudUrl = services.nextcloud.url;
+      entries[idx].nextcloudUser = services.nextcloud.user;
+      entries[idx].nextcloudPass = services.nextcloud.pass;
+    }
+    if (services.mail) {
+      entries[idx].mailHost = services.mail.host;
+      entries[idx].mailPort = services.mail.port;
+      entries[idx].mailUser = services.mail.user;
+      entries[idx].mailPass = services.mail.pass;
+      entries[idx].mailSecure = services.mail.secure;
+      entries[idx].smtpHost = services.mail.smtpHost;
+      entries[idx].smtpPort = services.mail.smtpPort;
+      entries[idx].smtpUser = services.mail.smtpUser;
+      entries[idx].smtpPass = services.mail.smtpPass;
+    }
+    if (services.telegram) {
+      entries[idx].telegramBotToken = services.telegram.token;
+    }
+    if (services.whatsapp !== undefined) {
+      entries[idx].whatsappEnabled = !!services.whatsapp?.enabled;
+    }
+
+    writeVault(entries);
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message });
+  }
 });
 
 /* ─── Cached data: GET /api/resource/:doctype ─── */
@@ -124,21 +204,11 @@ app.get("/api/resource/:doctype", async (req, res) => {
   }
 });
 
-/* ─── Cached single document: GET /api/resource/:doctype/:name ─── */
+/* ─── Single document: GET /api/resource/:doctype/:name ─── */
+// Always proxy to ERPNext for full documents (cache doesn't include child tables)
 
 app.get("/api/resource/:doctype/:name", async (req, res) => {
   const instanceId = resolveInstanceId(req);
-  const cache = multiCache.get(instanceId);
-  if (!cache) return res.status(404).json({ error: `Unknown instance: ${instanceId}` });
-
-  await cache.waitReady();
-  const { doctype, name } = req.params;
-
-  if (cache.isCached(doctype)) {
-    const doc = cache.getOne(doctype, name);
-    if (doc) return res.json({ data: doc });
-  }
-
   return proxyAndRespond(req, res, instanceId);
 });
 
@@ -338,6 +408,215 @@ app.get("/api/vault-path", (_req, res) => {
   res.json({ path: getVaultFilePath() });
 });
 
+/* ─── Password manager ─── */
+
+app.get("/api/passwords", (_req, res) => {
+  try {
+    res.json({ data: readPasswords() });
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+app.post("/api/passwords", (req, res) => {
+  try {
+    const entry = req.body as PasswordEntry;
+    if (!entry.id || !entry.title) {
+      return res.status(400).json({ error: "id and title are required" });
+    }
+    upsertPasswordEntry(entry);
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+app.delete("/api/passwords/:id", (req, res) => {
+  try {
+    removePasswordEntry(req.params.id);
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+app.post("/api/passwords/export", (_req, res) => {
+  try {
+    const entries = readPasswords();
+    res.json({ data: entries });
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+app.post("/api/passwords/import", (req, res) => {
+  try {
+    const { entries, replace } = req.body as { entries: PasswordEntry[]; replace?: boolean };
+    if (!Array.isArray(entries)) {
+      return res.status(400).json({ error: "entries must be an array" });
+    }
+    const count = importPasswords(entries, replace);
+    res.json({ ok: true, imported: count });
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+/* ─── Mail (IMAP) ─── */
+
+app.get("/api/mail/test", mailTestConnection);
+app.get("/api/mail/folders", mailListFolders);
+app.get("/api/mail/messages", mailListMessages);
+app.get("/api/mail/message", mailGetMessage);
+app.get("/api/mail/attachment", mailGetAttachment);
+app.post("/api/mail/send", mailSend);
+app.delete("/api/mail/message", mailDeleteMessage);
+app.post("/api/mail/move", mailMoveMessage);
+app.post("/api/mail/folder", mailCreateFolder);
+app.post("/api/mail/warmup", mailWarmup);
+app.get("/api/mail/warmup", mailWarmup);
+app.get("/api/mail/cache-stats", mailCacheStats);
+app.post("/api/mail/mark-unread", mailMarkUnread);
+app.post("/api/mail/rename-folder", mailRenameFolder);
+app.get("/api/mail/auto-config", mailAutoConfig);
+
+/* ─── NextCloud WebDAV ─── */
+
+app.get("/api/nextcloud/files", nextcloudListFiles);
+app.get("/api/nextcloud/download-url", nextcloudDownloadUrl);
+app.get("/api/nextcloud/download", nextcloudDownload);
+app.put("/api/nextcloud/upload", express.raw({ type: "*/*", limit: "100mb" }), nextcloudUpload);
+
+/* ─── Messenger (multi-platform) ─── */
+
+app.get("/api/messenger/conversations", messengerListConversations);
+app.get("/api/messenger/messages", messengerGetMessages);
+app.post("/api/messenger/send", messengerSendMessage);
+app.post("/api/messenger/mark-read", messengerMarkRead);
+
+/* ─── iCal calendar proxy ─── */
+
+app.get("/api/calendar/ical", async (req, res) => {
+  const url = req.query.url as string;
+  if (!url) return res.status(400).json({ error: "Missing url parameter" });
+
+  try {
+    // Normalize webcal:// to https://
+    const fetchUrl = url.replace(/^webcal:\/\//, "https://");
+    const response = await fetch(fetchUrl, {
+      headers: { Accept: "text/calendar, text/plain, */*" },
+      signal: AbortSignal.timeout(15000),
+    });
+    if (!response.ok) {
+      return res.status(response.status).json({ error: `Upstream returned ${response.status}` });
+    }
+    const text = await response.text();
+
+    // Parse VEVENT blocks into simple event objects
+    const events: Array<{
+      uid: string; summary: string; dtstart: string; dtend: string;
+      description: string; location: string; allDay: boolean;
+    }> = [];
+
+    const veventBlocks = text.split("BEGIN:VEVENT");
+    for (let i = 1; i < veventBlocks.length; i++) {
+      const block = veventBlocks[i].split("END:VEVENT")[0];
+
+      const getField = (name: string): string => {
+        // Handle folded lines (RFC 5545: continuation lines start with space/tab)
+        const regex = new RegExp(`^${name}[;:](.*)`, "m");
+        const match = block.match(regex);
+        if (!match) return "";
+        let val = match[1];
+        // Unfold continuation lines
+        const startIdx = block.indexOf(match[0]);
+        const afterMatch = block.substring(startIdx + match[0].length);
+        const continuationMatch = afterMatch.match(/^(\r?\n[ \t].*)*/);
+        if (continuationMatch && continuationMatch[0]) {
+          val += continuationMatch[0].replace(/\r?\n[ \t]/g, "");
+        }
+        return val.replace(/\\n/g, "\n").replace(/\\,/g, ",").replace(/\\\\/g, "\\").trim();
+      };
+
+      const dtstart = getField("DTSTART");
+      const dtend = getField("DTEND");
+      const summary = getField("SUMMARY");
+      const uid = getField("UID") || `ical-${i}`;
+      const description = getField("DESCRIPTION");
+      const location = getField("LOCATION");
+
+      // Determine if all-day (DATE format = 8 chars, no T)
+      const allDay = /^\d{8}$/.test(dtstart);
+
+      // Parse date values
+      const parseICalDate = (val: string): string => {
+        if (!val) return "";
+        // Remove TZID parameter prefix if present (e.g., "Europe/Amsterdam:20250101T090000")
+        const colonIdx = val.indexOf(":");
+        const dateStr = colonIdx >= 0 ? val.substring(colonIdx + 1) : val;
+        // All-day: 20250101
+        if (/^\d{8}$/.test(dateStr)) {
+          return `${dateStr.slice(0, 4)}-${dateStr.slice(4, 6)}-${dateStr.slice(6, 8)}`;
+        }
+        // DateTime: 20250101T090000 or 20250101T090000Z
+        if (/^\d{8}T\d{6}Z?$/.test(dateStr)) {
+          const d = dateStr.replace("Z", "");
+          return `${d.slice(0, 4)}-${d.slice(4, 6)}-${d.slice(6, 8)} ${d.slice(9, 11)}:${d.slice(11, 13)}:${d.slice(13, 15)}`;
+        }
+        return val;
+      };
+
+      events.push({
+        uid,
+        summary: summary || "(Geen titel)",
+        dtstart: parseICalDate(dtstart),
+        dtend: parseICalDate(dtend),
+        description,
+        location,
+        allDay,
+      });
+    }
+
+    res.json({ data: events });
+  } catch (err) {
+    res.status(502).json({ error: (err as Error).message });
+  }
+});
+
+/* ─── Open folder on host ─── */
+
+app.post("/api/open-folder", (req, res) => {
+  const folderPath = req.body?.path;
+  if (!folderPath || typeof folderPath !== "string") {
+    return res.status(400).json({ error: "Missing path parameter" });
+  }
+  // Sanitize: only allow paths starting with a drive letter
+  if (!/^[A-Za-z]:[\\/]/.test(folderPath)) {
+    return res.status(400).json({ error: "Invalid path" });
+  }
+  // Use explorer.exe on Windows to open the folder
+  const normalized = folderPath.replace(/\//g, "\\");
+  exec(`explorer.exe "${normalized}"`, (err) => {
+    if (err) {
+      console.warn("[open-folder] Error:", err.message);
+      // Explorer returns exit code 1 even on success sometimes
+    }
+  });
+  res.json({ ok: true });
+});
+
+/* ─── Open folder ─── */
+
+app.post("/api/open-folder", (req, res) => {
+  const folderPath = (req.body as { path?: string })?.path;
+  if (!folderPath) return res.status(400).json({ error: "Missing path" });
+  const normalized = folderPath.replace(/\//g, "\\");
+  exec(`explorer "${normalized}"`, (err) => {
+    if (err) return res.status(500).json({ error: err.message });
+    res.json({ ok: true });
+  });
+});
+
 /* ─── Agent chat ─── */
 
 app.post("/api/agent/chat", handleAgentChat);
@@ -379,6 +658,17 @@ export async function startServer(port?: number): Promise<number> {
 
   if (instances.length === 0) {
     console.log(`[server] No instances configured. Add them to the config file above.`);
+  }
+
+  // Seed 3BM NextCloud credentials into vault if not already present
+  const vaultEntries = readVault();
+  const bmEntry = vaultEntries.find(e => e.id === "3bm");
+  if (bmEntry && !bmEntry.nextcloudUrl) {
+    bmEntry.nextcloudUrl = "https://nextcloud.3bm.cloud";
+    bmEntry.nextcloudUser = "maarten@3bm.co.nl";
+    bmEntry.nextcloudPass = "5ngz4wdVl8ft";
+    writeVault(vaultEntries);
+    console.log("[server] Seeded 3BM NextCloud credentials into vault");
   }
 
   // Set up static file serving (lazy so ERPNEXT_LEVEL_DIST from electron is available)

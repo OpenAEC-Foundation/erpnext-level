@@ -1,5 +1,5 @@
 import { useEffect, useState, useMemo, type DragEvent } from "react";
-import { fetchList, fetchDocument, createDocument, callMethod, getErpNextAppUrl } from "../lib/erpnext";
+import { fetchList, fetchDocument, createDocument, callMethod, getErpNextLinkUrl } from "../lib/erpnext";
 import {
   CheckSquare, RefreshCw, Search, LayoutGrid, List, User, Filter,
   GripVertical, ChevronDown, Plus, X, ExternalLink, Calendar, Flag,
@@ -116,17 +116,6 @@ const workflowActions: Record<string, { action: string; next: string }[]> = {
   ],
 };
 
-const statusBadge: Record<string, string> = {
-  Open: "bg-3bm-teal/10 text-3bm-teal-dark",
-  Working: "bg-yellow-100 text-yellow-700",
-  "Pending Review": "bg-purple-100 text-purple-700",
-  "Pending Internal Review": "bg-indigo-100 text-indigo-700",
-  "Information Required": "bg-amber-100 text-amber-700",
-  Overdue: "bg-red-100 text-red-700",
-  Completed: "bg-green-100 text-green-700",
-  Cancelled: "bg-slate-100 text-slate-600",
-  "Template": "bg-slate-100 text-slate-500",
-};
 
 const priorityColors: Record<string, string> = {
   Urgent: "bg-red-100 text-red-700",
@@ -182,7 +171,7 @@ export default function Tasks() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState("");
-  const [statusFilter, setStatusFilter] = useState<string[]>([]);
+  const [statusFilter, setStatusFilter] = useState<string[]>(["Open", "Working", "Pending Review Intern", "Pending Review Extern", "On Hold", "Information required", "to discussed"]);
   const [company, setCompany] = useState(localStorage.getItem("erpnext_default_company") || "");
   const [view, setView] = useState<"kanban" | "table">("kanban");
   const [selectedTask, setSelectedTask] = useState<Task | null>(null);
@@ -255,7 +244,7 @@ export default function Tasks() {
 
   const filtered = useMemo(() => {
     let result = tasks;
-    if (statusFilter.length > 0) result = result.filter((t) => statusFilter.includes(t.status));
+    if (statusFilter.length > 0) result = result.filter((t) => statusFilter.includes(t.workflow_state));
     if (search.trim()) {
       const q = search.toLowerCase();
       result = result.filter(
@@ -327,23 +316,6 @@ export default function Tasks() {
     }
   }
 
-  async function changeTaskStatus(taskName: string, newStatus: string) {
-    // Optimistic update
-    setTasks(prev => prev.map(t => t.name === taskName ? { ...t, status: newStatus } : t));
-
-    try {
-      await callMethod("frappe.client.set_value", {
-        doctype: "Task",
-        name: taskName,
-        fieldname: "status",
-        value: newStatus,
-      });
-    } catch (e) {
-      loadData();
-      setError(e instanceof Error ? e.message : "Fout bij status wijzigen");
-    }
-  }
-
   async function changeWorkflowState(taskName: string, action: string, nextState: string) {
     // Optimistic update
     setTasks(prev => prev.map(t => t.name === taskName ? { ...t, workflow_state: nextState } : t));
@@ -405,7 +377,7 @@ export default function Tasks() {
     });
 
     setError(null);
-    const url = `${getErpNextAppUrl()}/app/delivery-note/${dn.name}`;
+    const url = `${getErpNextLinkUrl()}/delivery-note/${dn.name}`;
     // Show success with link
     alert(`Delivery Note ${dn.name} aangemaakt als draft.\n\nOpen in ERPNext: ${url}`);
     window.open(url, "_blank");
@@ -457,7 +429,7 @@ export default function Tasks() {
             </button>
           </div>
           <a
-            href={`${getErpNextAppUrl()}/task/new`}
+            href={`${getErpNextLinkUrl()}/task/new`}
             target="_blank"
             rel="noopener noreferrer"
             className="flex items-center gap-2 px-4 py-2 bg-white border border-slate-200 text-slate-700 rounded-lg hover:bg-slate-50 cursor-pointer"
@@ -516,7 +488,7 @@ export default function Tasks() {
             <>
               <div className="fixed inset-0 z-10" onClick={() => setStatusDropdownOpen(false)} />
               <div className="absolute top-full left-0 mt-1 bg-white border border-slate-200 rounded-lg shadow-lg z-20 py-1 min-w-[180px]">
-                {["Open", "Working", "Pending Review", "Pending Internal Review", "Information Required", "Overdue", "Completed", "Cancelled", "Template"].map((s) => (
+                {["Open", "Working", "Pending Review Intern", "Pending Review Extern", "On Hold", "Information required", "to discussed", "Completed", "Cancelled"].map((s) => (
                   <label
                     key={s}
                     className="flex items-center gap-2 px-3 py-2 hover:bg-slate-50 cursor-pointer text-sm text-slate-700"
@@ -527,7 +499,7 @@ export default function Tasks() {
                       onChange={() => toggleStatus(s)}
                       className="rounded border-slate-300 text-3bm-teal focus:ring-3bm-teal"
                     />
-                    <span className={`inline-block px-2 py-0.5 text-xs font-medium rounded-full ${statusBadge[s]}`}>
+                    <span className={`inline-block px-2 py-0.5 text-xs font-medium rounded-full ${workflowColors[s] ?? "bg-slate-100 text-slate-600"}`}>
                       {s}
                     </span>
                   </label>
@@ -554,7 +526,7 @@ export default function Tasks() {
       </div>
 
       {view === "kanban" ? (
-        <KanbanView data={kanbanData} loading={loading} onReassign={reassignTask} onStatusChange={changeTaskStatus} getDisplayName={getDisplayName} onSelectTask={setSelectedTask} projectNameMap={projectNameMap} />
+        <KanbanView data={kanbanData} loading={loading} onReassign={reassignTask} getDisplayName={getDisplayName} onSelectTask={setSelectedTask} projectNameMap={projectNameMap} />
       ) : (
         <TableView tasks={filtered} loading={loading} search={search} getDisplayName={getDisplayName} onSelectTask={setSelectedTask} />
       )}
@@ -567,10 +539,6 @@ export default function Tasks() {
           getDisplayName={getDisplayName}
           projectName={projectNameMap.get(selectedTask.project) || ""}
           employees={employees}
-          onStatusChange={(name, status) => {
-            changeTaskStatus(name, status);
-            setSelectedTask((prev) => prev && prev.name === name ? { ...prev, status } : prev);
-          }}
           onWorkflowChange={(name, action, nextState) => {
             changeWorkflowState(name, action, nextState);
             setSelectedTask((prev) => prev && prev.name === name ? { ...prev, workflow_state: nextState } : prev);
@@ -595,7 +563,6 @@ function TaskDetail({
   getDisplayName,
   projectName,
   employees,
-  onStatusChange,
   onWorkflowChange,
   onAssigneeChange,
 }: {
@@ -604,7 +571,6 @@ function TaskDetail({
   getDisplayName: (email: string) => string;
   projectName: string;
   employees: Employee[];
-  onStatusChange: (taskName: string, newStatus: string) => void;
   onWorkflowChange: (taskName: string, action: string, nextState: string) => void;
   onAssigneeChange: (taskName: string, oldEmails: string[], newEmail: string) => void;
 }) {
@@ -623,16 +589,6 @@ function TaskDetail({
       ),
     },
     {
-      label: "Status",
-      icon: Flag,
-      value: (
-        <StatusChanger
-          currentStatus={task.status}
-          onStatusChange={(s) => onStatusChange(task.name, s)}
-        />
-      ),
-    },
-    {
       label: "Prioriteit",
       icon: Flag,
       value: (
@@ -646,7 +602,7 @@ function TaskDetail({
       icon: Briefcase,
       value: task.project ? (
         <a
-          href={`${getErpNextAppUrl()}/project/${task.project}`}
+          href={`${getErpNextLinkUrl()}/project/${task.project}`}
           target="_blank"
           rel="noopener noreferrer"
           className="text-sm text-3bm-teal hover:underline flex items-center gap-1"
@@ -756,7 +712,7 @@ function TaskDetail({
           </div>
           <div className="flex items-center gap-2 flex-shrink-0">
             <a
-              href={`${getErpNextAppUrl()}/task/${task.name}`}
+              href={`${getErpNextLinkUrl()}/task/${task.name}`}
               target="_blank"
               rel="noopener noreferrer"
               className="p-2 hover:bg-slate-100 rounded-lg text-slate-400 hover:text-3bm-teal"
@@ -806,42 +762,7 @@ function TaskDetail({
 
 // ---- KANBAN with Drag & Drop ----
 
-function StatusChanger({ currentStatus, onStatusChange }: {
-  currentStatus: string;
-  onStatusChange: (status: string) => void;
-}) {
-  const [open, setOpen] = useState(false);
-  const statuses = ["Open", "Working", "Pending Review", "Pending Internal Review", "Information Required", "Overdue", "Completed", "Cancelled", "Template"];
 
-  return (
-    <div className="relative">
-      <button
-        onClick={(e) => { e.stopPropagation(); setOpen(!open); }}
-        className={`inline-block px-2 py-0.5 text-xs font-medium rounded-full cursor-pointer ${statusBadge[currentStatus] ?? "bg-slate-100 text-slate-600"}`}
-      >
-        {currentStatus}
-      </button>
-      {open && (
-        <>
-          <div className="fixed inset-0 z-30" onClick={(e) => { e.stopPropagation(); setOpen(false); }} />
-          <div className="absolute bottom-full left-0 mb-1 bg-white border border-slate-200 rounded-lg shadow-lg z-40 py-1 min-w-[180px]">
-            {statuses.filter(s => s !== currentStatus).map(s => (
-              <button
-                key={s}
-                onClick={(e) => { e.stopPropagation(); onStatusChange(s); setOpen(false); }}
-                className="w-full text-left px-3 py-1.5 hover:bg-slate-50 text-sm flex items-center gap-2 cursor-pointer"
-              >
-                <span className={`inline-block px-2 py-0.5 text-xs font-medium rounded-full ${statusBadge[s] ?? "bg-slate-100 text-slate-600"}`}>
-                  {s}
-                </span>
-              </button>
-            ))}
-          </div>
-        </>
-      )}
-    </div>
-  );
-}
 
 function WorkflowChanger({ currentState, onWorkflowChange }: {
   currentState: string;
@@ -881,12 +802,11 @@ function WorkflowChanger({ currentState, onWorkflowChange }: {
 }
 
 function KanbanView({
-  data, loading, onReassign, onStatusChange, getDisplayName, onSelectTask, projectNameMap,
+  data, loading, onReassign, getDisplayName, onSelectTask, projectNameMap,
 }: {
   data: [string, Task[]][];
   loading: boolean;
   onReassign: (taskName: string, from: string, to: string) => void;
-  onStatusChange: (taskName: string, newStatus: string) => void;
   getDisplayName: (email: string) => string;
   onSelectTask: (task: Task) => void;
   projectNameMap: Map<string, string>;
@@ -984,10 +904,6 @@ function KanbanView({
                         {task.workflow_state}
                       </span>
                     )}
-                    <StatusChanger
-                      currentStatus={task.status}
-                      onStatusChange={(newStatus) => onStatusChange(task.name, newStatus)}
-                    />
                   </div>
                   {task.exp_end_date && (
                     <span className={`text-xs ${isOverdue(task.exp_end_date) ? "text-red-500 font-semibold" : "text-slate-400"}`}>
@@ -1018,15 +934,14 @@ function TableView({ tasks, loading, search, getDisplayName, onSelectTask }: { t
             <th className="text-left px-4 py-3 text-sm font-semibold text-slate-600">Project</th>
             <th className="text-left px-4 py-3 text-sm font-semibold text-slate-600">Prioriteit</th>
             <th className="text-left px-4 py-3 text-sm font-semibold text-slate-600">Workflow</th>
-            <th className="text-left px-4 py-3 text-sm font-semibold text-slate-600">Status</th>
             <th className="text-left px-4 py-3 text-sm font-semibold text-slate-600">Deadline</th>
           </tr>
         </thead>
         <tbody>
           {loading ? (
-            <tr><td colSpan={8} className="px-4 py-8 text-center text-slate-400">Laden...</td></tr>
+            <tr><td colSpan={7} className="px-4 py-8 text-center text-slate-400">Laden...</td></tr>
           ) : tasks.length === 0 ? (
-            <tr><td colSpan={8} className="px-4 py-8 text-center text-slate-400">{search ? "Geen taken gevonden" : "Geen taken"}</td></tr>
+            <tr><td colSpan={7} className="px-4 py-8 text-center text-slate-400">{search ? "Geen taken gevonden" : "Geen taken"}</td></tr>
           ) : tasks.map((t) => {
             const assignees = parseAssignees(t.assigned_to);
             return (
@@ -1055,11 +970,6 @@ function TableView({ tasks, loading, search, getDisplayName, onSelectTask }: { t
                 <td className="px-4 py-3">
                   <span className={`inline-block px-2 py-1 text-xs font-medium rounded-full ${workflowColors[t.workflow_state] ?? "bg-slate-100 text-slate-600"}`}>
                     {t.workflow_state || "-"}
-                  </span>
-                </td>
-                <td className="px-4 py-3">
-                  <span className={`inline-block px-2 py-1 text-xs font-medium rounded-full ${statusBadge[t.status] ?? "bg-slate-100 text-slate-600"}`}>
-                    {t.status}
                   </span>
                 </td>
                 <td className={`px-4 py-3 text-sm ${isOverdue(t.exp_end_date) ? "text-red-500 font-semibold" : "text-slate-500"}`}>

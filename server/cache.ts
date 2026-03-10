@@ -75,7 +75,7 @@ export const CACHED_DOCTYPES: DoctypeConfig[] = [
     fields: [
       "name", "employee_name", "designation", "department", "company", "status",
       "user_id", "company_email", "date_of_birth", "date_of_joining",
-      "image", "modified",
+      "image", "default_activity_type", "modified",
     ],
   },
   {
@@ -89,7 +89,7 @@ export const CACHED_DOCTYPES: DoctypeConfig[] = [
     doctype: "Timesheet",
     fields: [
       "name", "employee", "employee_name", "start_date", "end_date",
-      "total_hours", "status", "company", "docstatus", "modified",
+      "total_hours", "total_billed_hours", "total_billed_amount", "status", "company", "docstatus", "modified",
     ],
   },
   {
@@ -257,9 +257,14 @@ export class CacheManager {
       // If a custom field is not permitted, retry without custom_* fields
       const msg = (err as Error).message || "";
       if (msg.includes("Field not permitted") || msg.includes("Unknown column")) {
-        const safeFields = cfg.fields.filter((f) => !f.startsWith("custom_"));
+        // Extract the problematic field name from the error message
+        const fieldMatch = msg.match(/Field not permitted.*?:\s*(\w+)/i) || msg.match(/Unknown column.*?'(\w+)'/i);
+        const problemField = fieldMatch?.[1];
+        const safeFields = problemField
+          ? cfg.fields.filter((f) => f !== problemField && !f.startsWith("custom_"))
+          : cfg.fields.filter((f) => !f.startsWith("custom_"));
         if (safeFields.length < cfg.fields.length) {
-          console.log(`[cache:${this.instance.id}] ${cfg.doctype}: retrying without custom fields`);
+          console.log(`[cache:${this.instance.id}] ${cfg.doctype}: retrying without ${problemField || 'custom'} fields`);
           docs = await fetchAll(this.instance, cfg.doctype, safeFields, cfg.baseFilters || []);
         } else {
           throw err;

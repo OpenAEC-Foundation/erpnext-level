@@ -76,10 +76,10 @@ export default function TerminalPanel() {
     }
 
     terminal.writeln("\x1b[1;36m╔══════════════════════════════════════════╗\x1b[0m");
-    terminal.writeln(`\x1b[1;36m║\x1b[0m  ERPNext Level Terminal                  \x1b[1;36m║\x1b[0m`);
+    terminal.writeln(`\x1b[1;36m║\x1b[0m  Y-app Terminal                          \x1b[1;36m║\x1b[0m`);
     terminal.writeln(`\x1b[1;36m║\x1b[0m  Instance: \x1b[1;33m${(instance.name || instanceId).padEnd(28)}\x1b[0m \x1b[1;36m║\x1b[0m`);
     terminal.writeln("\x1b[1;36m╚══════════════════════════════════════════╝\x1b[0m");
-    terminal.writeln("\x1b[90mVerbinden met Claude Code...\x1b[0m\n");
+    terminal.writeln("\x1b[90mVerbinden...\x1b[0m\n");
 
     // Connect WebSocket
     const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
@@ -179,7 +179,7 @@ export default function TerminalPanel() {
       <div className="flex items-center justify-between px-3 h-9 bg-[#24283b] text-[#a9b1d6] flex-shrink-0 select-none rounded-t-xl">
         <div className="flex items-center gap-2 min-w-0">
           <TerminalIcon size={13} className="text-[#7aa2f7] flex-shrink-0" />
-          <span className="text-xs font-medium font-mono">Claude Terminal</span>
+          <span className="text-xs font-medium font-mono">Y-app Terminal</span>
           <span className="text-[10px] text-[#565f89]">{instance.name}</span>
           <span className={`w-1.5 h-1.5 rounded-full ${connected ? "bg-[#9ece6a]" : "bg-[#f7768e]"}`} />
         </div>

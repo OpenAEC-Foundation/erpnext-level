@@ -32,7 +32,7 @@ function createWindow() {
     height: 900,
     minWidth: 1000,
     minHeight: 700,
-    title: "ERPNext Level",
+    title: "Y-app",
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
@@ -63,7 +63,7 @@ app.whenReady().then(async () => {
   } catch (err) {
     console.error("[electron] Failed to start:", err);
     dialog.showErrorBox(
-      "ERPNext Level - Fout bij opstarten",
+      "Y-app - Fout bij opstarten",
       `Kan de server niet starten:\n\n${err}`
     );
     app.quit();

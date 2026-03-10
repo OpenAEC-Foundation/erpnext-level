@@ -1,5 +1,5 @@
 import { useEffect, useState, useMemo } from "react";
-import { fetchAll, getErpNextAppUrl } from "../lib/erpnext";
+import { fetchAll, getErpNextLinkUrl } from "../lib/erpnext";
 import {
   PieChart,
   RefreshCw,
@@ -316,7 +316,7 @@ export default function Kosteninzicht() {
         </div>
         <div className="flex items-center gap-2">
           <a
-            href={`${getErpNextAppUrl()}/app/general-ledger?company=${encodeURIComponent(company)}`}
+            href={`${getErpNextLinkUrl()}/general-ledger?company=${encodeURIComponent(company)}`}
             target="_blank"
             rel="noopener noreferrer"
             className="flex items-center gap-2 px-3 py-2 text-sm text-slate-600 bg-white border border-slate-200 rounded-lg hover:bg-slate-50"
@@ -604,7 +604,7 @@ export default function Kosteninzicht() {
               </div>
               <div className="flex items-center gap-2">
                 <a
-                  href={`${getErpNextAppUrl()}/app/general-ledger?account=${encodeURIComponent(selectedAccount.account)}&company=${encodeURIComponent(company)}&from_date=${year}-01-01&to_date=${year}-12-31`}
+                  href={`${getErpNextLinkUrl()}/general-ledger?account=${encodeURIComponent(selectedAccount.account)}&company=${encodeURIComponent(company)}&from_date=${year}-01-01&to_date=${year}-12-31`}
                   target="_blank"
                   rel="noopener noreferrer"
                   className="p-2 rounded-lg hover:bg-slate-200 transition-colors"
@@ -695,7 +695,7 @@ export default function Kosteninzicht() {
                                     <td className="px-6 pl-14 py-2 text-xs text-slate-500">{entry.posting_date}</td>
                                     <td className="px-3 py-2 text-xs">
                                       <a
-                                        href={`${getErpNextAppUrl()}/app/${(entry.voucher_type || "gl-entry").toLowerCase().replace(/\s+/g, "-")}/${entry.voucher_no}`}
+                                        href={`${getErpNextLinkUrl()}/${(entry.voucher_type || "gl-entry").toLowerCase().replace(/\s+/g, "-")}/${entry.voucher_no}`}
                                         target="_blank"
                                         rel="noopener noreferrer"
                                         className="text-3bm-teal hover:text-3bm-teal-dark hover:underline"

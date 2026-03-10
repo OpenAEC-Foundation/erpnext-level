@@ -20,6 +20,7 @@ export interface Employee {
   company_email: string;
   date_of_birth: string;
   image: string;
+  default_activity_type?: string;
 }
 
 export interface ProjectRecord {
@@ -80,9 +81,16 @@ export function DataProvider({ children }: { children: ReactNode }) {
       }),
       fetchAll<Employee>(
         "Employee",
-        ["name", "employee_name", "designation", "department", "company", "status", "user_id", "company_email", "date_of_birth", "image"],
+        ["name", "employee_name", "designation", "department", "company", "status", "user_id", "company_email", "date_of_birth", "image", "default_activity_type"],
         [],
         "employee_name asc"
+      ).catch(() =>
+        fetchAll<Employee>(
+          "Employee",
+          ["name", "employee_name", "designation", "department", "company", "status", "user_id", "company_email", "date_of_birth", "image"],
+          [],
+          "employee_name asc"
+        )
       ),
       // Try with custom_address first (v15), fallback without it (v16)
       fetchAll<ProjectRecord>(

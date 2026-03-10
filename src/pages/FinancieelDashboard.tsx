@@ -10,6 +10,7 @@ import DateRangeFilter from "../components/DateRangeFilter";
 interface InvoiceTrend {
   month: string;
   label: string;
+  total: number;
   outstanding: number;
   count: number;
 }
@@ -28,8 +29,8 @@ export default function FinancieelDashboard() {
   const [unpaidPurchase, setUnpaidPurchase] = useState<{count: number; total: number}>({count: 0, total: 0});
   const [unpaidSales, setUnpaidSales] = useState<{count: number; total: number}>({count: 0, total: 0});
 
-  // Trend data
-  const [salesInvoices, setSalesInvoices] = useState<{posting_date: string; outstanding_amount: number}[]>([]);
+  // Trend data (all submitted invoices for chart)
+  const [salesInvoices, setSalesInvoices] = useState<{posting_date: string; grand_total: number; outstanding_amount: number}[]>([]);
 
   async function loadData() {
     setLoading(true);
@@ -61,15 +62,14 @@ export default function FinancieelDashboard() {
           ]
         ),
 
-        // Outstanding Sales Invoices with dates for trend
-        fetchAll<{posting_date: string; outstanding_amount: number}>(
+        // All submitted Sales Invoices for trend chart
+        fetchAll<{posting_date: string; grand_total: number; outstanding_amount: number}>(
           "Sales Invoice",
-          ["posting_date", "outstanding_amount"],
+          ["posting_date", "grand_total", "outstanding_amount"],
           [
             ...companyFilter,
             ...dateFilters,
             ["docstatus", "=", 1],
-            ["outstanding_amount", ">", 0],
           ],
           "posting_date asc"
         ),
@@ -80,9 +80,10 @@ export default function FinancieelDashboard() {
         count: purchaseList.length,
         total: purchaseList.reduce((s, i) => s + i.outstanding_amount, 0),
       });
+      const outstandingSales = salesList.filter(i => i.outstanding_amount > 0);
       setUnpaidSales({
-        count: salesList.length,
-        total: salesList.reduce((s, i) => s + i.outstanding_amount, 0),
+        count: outstandingSales.length,
+        total: outstandingSales.reduce((s, i) => s + i.outstanding_amount, 0),
       });
       setSalesInvoices(salesList);
     } catch (e) {
@@ -96,10 +97,11 @@ export default function FinancieelDashboard() {
 
   // Build monthly trend
   const trendData = useMemo<InvoiceTrend[]>(() => {
-    const months = new Map<string, {outstanding: number; count: number}>();
+    const months = new Map<string, {total: number; outstanding: number; count: number}>();
     for (const inv of salesInvoices) {
       const key = inv.posting_date.slice(0, 7); // YYYY-MM
-      const current = months.get(key) || {outstanding: 0, count: 0};
+      const current = months.get(key) || {total: 0, outstanding: 0, count: 0};
+      current.total += inv.grand_total;
       current.outstanding += inv.outstanding_amount;
       current.count++;
       months.set(key, current);
@@ -117,7 +119,7 @@ export default function FinancieelDashboard() {
       });
   }, [salesInvoices]);
 
-  const maxTrend = Math.max(...trendData.map(d => d.outstanding), 1);
+  const maxTrend = Math.max(...trendData.map(d => Math.max(d.total, d.outstanding)), 1);
 
   return (
     <div className="p-6">
@@ -172,12 +174,22 @@ export default function FinancieelDashboard() {
         </div>
       </div>
 
-      {/* Chart: Outstanding over time */}
+      {/* Chart: Invoiced vs Outstanding per month */}
       <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-6">
-        <h3 className="text-lg font-semibold text-slate-700 mb-4 flex items-center gap-2">
-          <TrendingUp size={18} className="text-3bm-teal" />
-          Openstaande verkoopfacturen per maand
-        </h3>
+        <div className="flex items-center justify-between mb-4">
+          <h3 className="text-lg font-semibold text-slate-700 flex items-center gap-2">
+            <TrendingUp size={18} className="text-3bm-teal" />
+            Verkoopfacturen per maand
+          </h3>
+          <div className="flex items-center gap-4 text-xs text-slate-500">
+            <span className="flex items-center gap-1.5">
+              <span className="w-3 h-3 bg-3bm-teal/30 rounded-sm" /> Gefactureerd
+            </span>
+            <span className="flex items-center gap-1.5">
+              <span className="w-3 h-3 bg-red-400 rounded-sm" /> Openstaand
+            </span>
+          </div>
+        </div>
         {loading ? (
           <div className="h-64 flex items-center justify-center text-slate-400">Laden...</div>
         ) : trendData.length === 0 ? (
@@ -187,13 +199,25 @@ export default function FinancieelDashboard() {
             {trendData.map((d) => (
               <div key={d.month} className="flex-1 flex flex-col items-center justify-end h-full group">
                 <div className="relative w-full flex justify-center mb-1">
-                  <div className="absolute -top-10 bg-slate-800 text-white text-xs px-2 py-1 rounded opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap pointer-events-none z-10">
-                    {d.count} facturen - {euro(d.outstanding)}
+                  <div className="absolute -top-14 left-1/2 -translate-x-1/2 bg-slate-800 text-white text-xs px-2.5 py-1.5 rounded opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap pointer-events-none z-10">
+                    <div>{d.count} facturen</div>
+                    <div>Gefactureerd: {euro(d.total)}</div>
+                    <div>Openstaand: {euro(d.outstanding)}</div>
                   </div>
-                  <div
-                    className="w-full max-w-[40px] bg-3bm-teal rounded-t hover:bg-3bm-teal-dark transition-colors"
-                    style={{ height: `${Math.max((d.outstanding / maxTrend) * 100, d.outstanding > 0 ? 3 : 0)}%`, minHeight: d.outstanding > 0 ? '4px' : '0' }}
-                  />
+                  <div className="w-full max-w-[40px] relative">
+                    {/* Total bar (background) */}
+                    <div
+                      className="w-full bg-3bm-teal/20 rounded-t transition-colors"
+                      style={{ height: `${Math.max((d.total / maxTrend) * 100, d.total > 0 ? 3 : 0)}%`, minHeight: d.total > 0 ? '4px' : '0' }}
+                    />
+                    {/* Outstanding bar (overlay, from bottom) */}
+                    {d.outstanding > 0 && (
+                      <div
+                        className="w-full bg-red-400 rounded-t absolute bottom-0 left-0 transition-colors"
+                        style={{ height: `${Math.max((d.outstanding / maxTrend) * 100, 3)}%`, minHeight: '4px' }}
+                      />
+                    )}
+                  </div>
                 </div>
                 <p className="text-[10px] text-slate-400 mt-1 -rotate-45 origin-top-left whitespace-nowrap">{d.label}</p>
               </div>

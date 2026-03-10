@@ -1,44 +1,32 @@
-// When erpnext_url is empty, requests go through Vite proxy (/api → 3bm.prilk.cloud)
-// When set, requests go through /erpnext-proxy to avoid CORS
-function getBaseUrl(): string {
-  return localStorage.getItem("erpnext_url") || "";
+/**
+ * ERPNext API client — all requests go through the backend server.
+ * The backend handles authentication and caching.
+ * Instance selection via ?instance=<id> query parameter.
+ */
+
+import { getActiveInstanceId, getActiveInstance } from "./instances";
+
+/** Build API URL: always relative (through backend), with instance query param */
+function buildApiUrl(path: string, extraParams?: URLSearchParams): string {
+  const params = extraParams || new URLSearchParams();
+  params.set("instance", getActiveInstanceId());
+  const qs = params.toString();
+  return qs ? `${path}?${qs}` : path;
 }
 
-// Build the actual fetch URL: uses the local proxy for non-empty URLs
-function buildApiUrl(path: string, queryString?: string): string {
-  const base = getBaseUrl();
-  if (!base) {
-    // Empty URL = use Vite dev proxy (relative path)
-    return queryString ? `${path}?${queryString}` : path;
-  }
-  // Non-empty URL = route through our proxy middleware to avoid CORS
-  const params = new URLSearchParams();
-  params.set("url", base);
-  params.set("path", path);
-  if (queryString) params.set("qs", queryString);
-  return `/erpnext-proxy?${params}`;
-}
-
+/** Get the ERPNext app URL for the active instance (for links, file URLs, etc.) */
 export function getErpNextAppUrl(): string {
-  return localStorage.getItem("erpnext_url") || "";
+  return getActiveInstance().url;
 }
 
-function getApiKey(): string {
-  return localStorage.getItem("erpnext_api_key") || "";
+/** Get the ERPNext link URL for document links (appends /app to the instance URL) */
+export function getErpNextLinkUrl(): string {
+  return `${getErpNextAppUrl()}/app`;
 }
 
-function getApiSecret(): string {
-  return localStorage.getItem("erpnext_api_secret") || "";
-}
-
+/** Minimal headers — no auth needed, backend handles that */
 function getHeaders(): HeadersInit {
-  const key = getApiKey();
-  const secret = getApiSecret();
-  if (!key || !secret) {
-    console.warn("ERPNext API credentials niet ingesteld. Ga naar Instellingen.");
-  }
   return {
-    Authorization: `token ${key}:${secret}`,
     "Content-Type": "application/json",
     Accept: "application/json",
   };
@@ -79,7 +67,7 @@ export async function fetchList<T = Record<string, unknown>>(
     searchParams.set("order_by", params.order_by);
   }
 
-  const url = buildApiUrl(`/api/resource/${doctype}`, searchParams.toString());
+  const url = buildApiUrl(`/api/resource/${doctype}`, searchParams);
   const res = await fetch(url, { headers: getHeaders() });
   if (!res.ok) throw new Error(`ERPNext API error: ${res.status}`);
   const json: ERPNextListResponse<T> = await res.json();
@@ -115,7 +103,9 @@ export async function fetchDocument<T = Record<string, unknown>>(
   doctype: string,
   name: string
 ): Promise<T> {
-  const url = buildApiUrl(`/api/resource/${doctype}/${encodeURIComponent(name)}`);
+  const params = new URLSearchParams();
+  params.set("instance", getActiveInstanceId());
+  const url = `/api/resource/${doctype}/${encodeURIComponent(name)}?${params}`;
   const res = await fetch(url, { headers: getHeaders() });
   if (!res.ok) throw new Error(`ERPNext API error: ${res.status}`);
   const json = await res.json();
@@ -145,7 +135,7 @@ export async function fetchAttachments(
 }
 
 export function getFileUrl(fileUrl: string): string {
-  return `${getBaseUrl()}${fileUrl}`;
+  return `${getErpNextAppUrl()}${fileUrl}`;
 }
 
 export function getAuthHeaders(): HeadersInit {
@@ -156,7 +146,9 @@ export async function callMethod(
   method: string,
   args: Record<string, unknown>
 ): Promise<unknown> {
-  const url = buildApiUrl(`/api/method/${method}`);
+  const params = new URLSearchParams();
+  params.set("instance", getActiveInstanceId());
+  const url = `/api/method/${method}?${params}`;
   const res = await fetch(url, {
     method: "POST",
     headers: getHeaders(),
@@ -171,7 +163,9 @@ export async function createDocument<T = Record<string, unknown>>(
   doctype: string,
   data: Record<string, unknown>
 ): Promise<T> {
-  const url = buildApiUrl(`/api/resource/${doctype}`);
+  const params = new URLSearchParams();
+  params.set("instance", getActiveInstanceId());
+  const url = `/api/resource/${doctype}?${params}`;
   const res = await fetch(url, {
     method: "POST",
     headers: getHeaders(),
@@ -190,7 +184,9 @@ export async function updateDocument<T = Record<string, unknown>>(
   name: string,
   data: Record<string, unknown>
 ): Promise<T> {
-  const url = buildApiUrl(`/api/resource/${doctype}/${encodeURIComponent(name)}`);
+  const params = new URLSearchParams();
+  params.set("instance", getActiveInstanceId());
+  const url = `/api/resource/${doctype}/${encodeURIComponent(name)}?${params}`;
   const res = await fetch(url, {
     method: "PUT",
     headers: getHeaders(),
@@ -208,7 +204,9 @@ export async function deleteDocument(
   doctype: string,
   name: string
 ): Promise<void> {
-  const url = buildApiUrl(`/api/resource/${doctype}/${encodeURIComponent(name)}`);
+  const params = new URLSearchParams();
+  params.set("instance", getActiveInstanceId());
+  const url = `/api/resource/${doctype}/${encodeURIComponent(name)}?${params}`;
   const res = await fetch(url, {
     method: "DELETE",
     headers: getHeaders(),
@@ -228,7 +226,8 @@ export async function fetchCount(
     args.filters = JSON.stringify(filters);
   }
   const searchParams = new URLSearchParams(args);
-  const url = buildApiUrl(`/api/method/frappe.client.get_count`, searchParams.toString());
+  searchParams.set("instance", getActiveInstanceId());
+  const url = `/api/method/frappe.client.get_count?${searchParams}`;
   const res = await fetch(url, { headers: getHeaders() });
   if (!res.ok) throw new Error(`ERPNext API error: ${res.status}`);
   const json: ERPNextCountResponse = await res.json();

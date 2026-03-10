@@ -1,25 +1,13 @@
-import { useState } from "react";
-import { Plus, X, Server, Building2, User, MessageSquarePlus, RefreshCw } from "lucide-react";
+import { useState, useEffect } from "react";
+import { Plus, Server, Building2, User, MessageSquarePlus, RefreshCw } from "lucide-react";
 import {
   getInstances,
   getActiveInstanceId,
   activateInstance,
-  addInstance,
-  removeInstance,
-  type ERPInstance,
+  loadInstancesFromBackend,
 } from "../lib/instances";
+import { useCompanies, useEmployees } from "../lib/DataContext";
 import type { ViewMode } from "./Sidebar";
-
-const TAB_COLORS = [
-  "#0d9488", // teal
-  "#6366f1", // indigo
-  "#e11d48", // rose
-  "#f59e0b", // amber
-  "#8b5cf6", // violet
-  "#059669", // emerald
-  "#dc2626", // red
-  "#2563eb", // blue
-];
 
 interface InstanceBarProps {
   onSwitch: () => void;
@@ -31,116 +19,100 @@ interface InstanceBarProps {
 export default function InstanceBar({ onSwitch, onRefresh, viewMode, onViewModeChange }: InstanceBarProps) {
   const [instances, setInstances] = useState(getInstances);
   const [activeId, setActiveId] = useState(getActiveInstanceId);
-  const [showAdd, setShowAdd] = useState(false);
   const [showFeedback, setShowFeedback] = useState(false);
   const [fbTitle, setFbTitle] = useState("");
   const [fbBody, setFbBody] = useState("");
   const [fbType, setFbType] = useState<"bug" | "feature" | "question">("bug");
-  const [newName, setNewName] = useState("");
-  const [newUrl, setNewUrl] = useState("");
-  const [newKey, setNewKey] = useState("");
-  const [newSecret, setNewSecret] = useState("");
+
+  // Company & Employee selectors
+  const companies = useCompanies();
+  const employees = useEmployees();
+  const [selectedCompany, setSelectedCompany] = useState(
+    () => localStorage.getItem(`pref_${getActiveInstanceId()}_company`) || ""
+  );
+  const [selectedEmployee, setSelectedEmployee] = useState(
+    () => localStorage.getItem(`pref_${getActiveInstanceId()}_employee`) || ""
+  );
+
+  // Filter employees by selected company
+  const filteredEmployees = selectedCompany
+    ? employees.filter(e => e.company === selectedCompany && e.status === "Active")
+    : employees.filter(e => e.status === "Active");
+
+  function handleCompanyChange(company: string) {
+    setSelectedCompany(company);
+    localStorage.setItem(`pref_${activeId}_company`, company);
+    localStorage.setItem("erpnext_default_company", company);
+  }
+
+  function handleEmployeeChange(employee: string) {
+    setSelectedEmployee(employee);
+    localStorage.setItem(`pref_${activeId}_employee`, employee);
+    localStorage.setItem("erpnext_default_employee", employee);
+  }
+
+  // Load instances from backend on mount
+  useEffect(() => {
+    loadInstancesFromBackend().then(() => {
+      setInstances(getInstances());
+    });
+  }, []);
 
   function handleSwitch(id: string) {
     if (id === activeId) return;
     activateInstance(id);
     setActiveId(id);
-    setInstances(getInstances());
     onSwitch();
   }
 
-  function handleAdd() {
-    if (!newName.trim() || !newUrl.trim()) return;
-    const id = newName.toLowerCase().replace(/[^a-z0-9]/g, "-");
-    const color = TAB_COLORS[instances.length % TAB_COLORS.length];
-    const inst: ERPInstance = {
-      id,
-      name: newName.trim(),
-      color,
-      url: newUrl.trim(),
-      apiKey: newKey.trim(),
-      apiSecret: newSecret.trim(),
-      defaultCompany: "",
-      defaultEmployee: "",
-      baseDir: "",
-    };
-    addInstance(inst);
-    setInstances(getInstances());
-    setNewName("");
-    setNewUrl("");
-    setNewKey("");
-    setNewSecret("");
-    setShowAdd(false);
-    // Activate it immediately
-    handleSwitch(id);
-  }
-
-  function handleRemove(e: React.MouseEvent, id: string) {
-    e.stopPropagation();
-    if (instances.length <= 1) return;
-    removeInstance(id);
-    const updated = getInstances();
-    setInstances(updated);
-    if (id === activeId) {
-      setActiveId(updated[0].id);
-      onSwitch();
-    }
-  }
-
   return (
-    <div className="bg-slate-800 flex items-center gap-0 px-2 h-9 flex-shrink-0 relative">
+    <div className="bg-slate-800 flex items-center px-2 h-9 flex-shrink-0 relative">
       <Server size={14} className="text-slate-500 mr-2 flex-shrink-0" />
 
-      {instances.map((inst) => {
-        const isActive = inst.id === activeId;
-        return (
-          <button
-            key={inst.id}
-            onClick={() => handleSwitch(inst.id)}
-            className={`group flex items-center gap-1.5 px-3 h-7 rounded-t-md text-xs font-medium transition-colors cursor-pointer relative ${
-              isActive
-                ? "bg-slate-100 text-slate-800"
-                : "bg-slate-700 text-slate-300 hover:bg-slate-600 hover:text-white"
-            }`}
-            style={isActive ? { borderBottom: `2px solid ${inst.color}` } : undefined}
-          >
-            <div
-              className="w-2 h-2 rounded-full flex-shrink-0"
-              style={{ backgroundColor: inst.color }}
-            />
-            {inst.name}
-            {instances.length > 1 && (
-              <span
-                onClick={(e) => handleRemove(e, inst.id)}
-                className={`ml-1 rounded-sm hover:bg-slate-300/30 p-0.5 ${
-                  isActive ? "text-slate-400" : "text-slate-500 opacity-0 group-hover:opacity-100"
-                }`}
-              >
-                <X size={10} />
-              </span>
-            )}
-          </button>
-        );
-      })}
+      {/* Scrollable instance tabs */}
+      <div className="flex items-center gap-0 overflow-x-auto scrollbar-none flex-shrink min-w-0">
+        {instances.map((inst) => {
+          const isActive = inst.id === activeId;
+          return (
+            <button
+              key={inst.id}
+              onClick={() => handleSwitch(inst.id)}
+              className={`flex items-center gap-1.5 px-3 h-7 rounded-t-md text-xs font-medium transition-colors cursor-pointer whitespace-nowrap flex-shrink-0 ${
+                isActive
+                  ? "bg-slate-100 text-slate-800"
+                  : "bg-slate-700 text-slate-300 hover:bg-slate-600 hover:text-white"
+              }`}
+              style={isActive ? { borderBottom: `2px solid ${inst.color}` } : undefined}
+            >
+              <div
+                className="w-2 h-2 rounded-full flex-shrink-0"
+                style={{ backgroundColor: inst.color }}
+              />
+              {inst.name}
+            </button>
+          );
+        })}
+      </div>
 
       <button
-        onClick={() => setShowAdd(true)}
-        className="flex items-center gap-1 px-2 h-7 text-xs text-slate-500 hover:text-white hover:bg-slate-700 rounded-md transition-colors cursor-pointer ml-1"
-        title="Instance toevoegen"
+        onClick={async () => {
+          await loadInstancesFromBackend();
+          setInstances(getInstances());
+        }}
+        className="flex items-center gap-1 px-2 h-7 text-xs text-slate-500 hover:text-white hover:bg-slate-700 rounded-md transition-colors cursor-pointer ml-1 flex-shrink-0"
+        title="Instances herladen"
       >
         <Plus size={12} />
       </button>
 
       {/* Centered logos */}
-      <div className="absolute left-1/2 -translate-x-1/2 flex items-center gap-2.5">
-        {/* ERPNext logo */}
+      <div className="absolute left-1/2 -translate-x-1/2 flex items-center gap-2.5 pointer-events-none">
         <svg viewBox="0 0 80 18" className="h-4" xmlns="http://www.w3.org/2000/svg">
           <rect x="0" y="1" width="16" height="16" rx="3" fill="#0089FF" />
           <text x="8" y="13.5" textAnchor="middle" fontFamily="system-ui, sans-serif" fontWeight="800" fontSize="11" fill="white">E</text>
           <text x="22" y="14" fontFamily="system-ui, sans-serif" fontWeight="700" fontSize="12" fill="rgba(255,255,255,0.85)">RPNext</text>
         </svg>
         <span className="text-xs text-slate-500 font-medium">×</span>
-        {/* OpenAEC Foundation logo */}
         <svg viewBox="0 0 140 18" className="h-4" xmlns="http://www.w3.org/2000/svg">
           <rect x="0" y="1" width="16" height="16" rx="3" fill="#10b981" />
           <text x="8" y="13" textAnchor="middle" fontFamily="system-ui, sans-serif" fontWeight="800" fontSize="10" fill="white">&#x2B21;</text>
@@ -148,49 +120,81 @@ export default function InstanceBar({ onSwitch, onRefresh, viewMode, onViewModeC
         </svg>
       </div>
 
-      {/* Refresh + Feedback + View Mode Toggle */}
-      <div className="ml-auto flex items-center gap-2">
-      {onRefresh && (
+      {/* Right side controls */}
+      <div className="ml-auto flex items-center gap-2 flex-shrink-0">
+        {/* Company & Employee selectors (werkgever mode) */}
+        {viewMode === "werkgever" && companies.length > 0 && (
+          <>
+            <div className="flex items-center gap-1">
+              <Building2 size={12} className="text-slate-500" />
+              <select
+                value={selectedCompany}
+                onChange={e => handleCompanyChange(e.target.value)}
+                className="bg-slate-700 text-slate-300 text-xs h-6 px-1.5 rounded border-none outline-none cursor-pointer max-w-[140px]"
+              >
+                <option value="">Alle bedrijven</option>
+                {companies.map(c => (
+                  <option key={c.name} value={c.name}>{c.company_name}</option>
+                ))}
+              </select>
+            </div>
+            <div className="flex items-center gap-1">
+              <User size={12} className="text-slate-500" />
+              <select
+                value={selectedEmployee}
+                onChange={e => handleEmployeeChange(e.target.value)}
+                className="bg-slate-700 text-slate-300 text-xs h-6 px-1.5 rounded border-none outline-none cursor-pointer max-w-[160px]"
+              >
+                <option value="">Alle medewerkers</option>
+                {filteredEmployees.map(e => (
+                  <option key={e.name} value={e.name}>{e.employee_name}</option>
+                ))}
+              </select>
+            </div>
+            <div className="w-px h-5 bg-slate-600" />
+          </>
+        )}
+        {onRefresh && (
+          <button
+            onClick={onRefresh}
+            className="flex items-center gap-1 px-2 h-7 text-xs text-slate-500 hover:text-white hover:bg-slate-700 rounded-md transition-colors cursor-pointer"
+            title="Data vernieuwen"
+          >
+            <RefreshCw size={12} />
+          </button>
+        )}
         <button
-          onClick={onRefresh}
+          onClick={() => setShowFeedback(true)}
           className="flex items-center gap-1 px-2 h-7 text-xs text-slate-500 hover:text-white hover:bg-slate-700 rounded-md transition-colors cursor-pointer"
-          title="Data vernieuwen"
+          title="Feedback / Issue melden"
         >
-          <RefreshCw size={12} />
+          <MessageSquarePlus size={12} />
+          <span className="hidden sm:inline">Feedback</span>
         </button>
-      )}
-      <button
-        onClick={() => setShowFeedback(true)}
-        className="flex items-center gap-1 px-2 h-7 text-xs text-slate-500 hover:text-white hover:bg-slate-700 rounded-md transition-colors cursor-pointer"
-        title="Feedback / Issue melden"
-      >
-        <MessageSquarePlus size={12} />
-        <span className="hidden sm:inline">Feedback</span>
-      </button>
-      <div className="flex items-center bg-slate-700 rounded-md p-0.5 gap-0.5">
-        <button
-          onClick={() => onViewModeChange("werkgever")}
-          className={`flex items-center gap-1.5 px-2.5 h-6 rounded text-xs font-medium transition-colors cursor-pointer ${
-            viewMode === "werkgever"
-              ? "bg-3bm-teal text-white"
-              : "text-slate-400 hover:text-white"
-          }`}
-        >
-          <Building2 size={12} />
-          Werkgever
-        </button>
-        <button
-          onClick={() => onViewModeChange("werknemer")}
-          className={`flex items-center gap-1.5 px-2.5 h-6 rounded text-xs font-medium transition-colors cursor-pointer ${
-            viewMode === "werknemer"
-              ? "bg-3bm-teal text-white"
-              : "text-slate-400 hover:text-white"
-          }`}
-        >
-          <User size={12} />
-          Werknemer
-        </button>
-      </div>
+        <div className="flex items-center bg-slate-700 rounded-md p-0.5 gap-0.5">
+          <button
+            onClick={() => onViewModeChange("werkgever")}
+            className={`flex items-center gap-1.5 px-2.5 h-6 rounded text-xs font-medium transition-colors cursor-pointer ${
+              viewMode === "werkgever"
+                ? "bg-3bm-teal text-white"
+                : "text-slate-400 hover:text-white"
+            }`}
+          >
+            <Building2 size={12} />
+            Werkgever
+          </button>
+          <button
+            onClick={() => onViewModeChange("werknemer")}
+            className={`flex items-center gap-1.5 px-2.5 h-6 rounded text-xs font-medium transition-colors cursor-pointer ${
+              viewMode === "werknemer"
+                ? "bg-3bm-teal text-white"
+                : "text-slate-400 hover:text-white"
+            }`}
+          >
+            <User size={12} />
+            Werknemer
+          </button>
+        </div>
       </div>
 
       {/* Feedback Modal */}
@@ -269,76 +273,6 @@ export default function InstanceBar({ onSwitch, onRefresh, viewMode, onViewModeC
                 className="px-4 py-2 text-sm text-white bg-3bm-teal rounded-lg hover:bg-3bm-teal-dark disabled:opacity-50 cursor-pointer"
               >
                 Openen op GitHub
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Add Instance Modal */}
-      {showAdd && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center">
-          <div className="absolute inset-0 bg-black/50" onClick={() => setShowAdd(false)} />
-          <div className="relative bg-white rounded-xl shadow-2xl p-6 w-full max-w-md space-y-4">
-            <h3 className="text-lg font-semibold text-slate-800">ERPNext-instance toevoegen</h3>
-
-            <div>
-              <label className="block text-sm font-medium text-slate-700 mb-1">Naam *</label>
-              <input
-                type="text"
-                value={newName}
-                onChange={(e) => setNewName(e.target.value)}
-                placeholder="bijv. Domera"
-                className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-3bm-teal"
-              />
-            </div>
-
-            <div>
-              <label className="block text-sm font-medium text-slate-700 mb-1">URL *</label>
-              <input
-                type="url"
-                value={newUrl}
-                onChange={(e) => setNewUrl(e.target.value)}
-                placeholder="https://domera.prilk.cloud"
-                className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-3bm-teal font-mono"
-              />
-            </div>
-
-            <div>
-              <label className="block text-sm font-medium text-slate-700 mb-1">API Key</label>
-              <input
-                type="text"
-                value={newKey}
-                onChange={(e) => setNewKey(e.target.value)}
-                placeholder="API key"
-                className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-3bm-teal font-mono"
-              />
-            </div>
-
-            <div>
-              <label className="block text-sm font-medium text-slate-700 mb-1">API Secret</label>
-              <input
-                type="password"
-                value={newSecret}
-                onChange={(e) => setNewSecret(e.target.value)}
-                placeholder="API secret"
-                className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-3bm-teal font-mono"
-              />
-            </div>
-
-            <div className="flex justify-end gap-2 pt-2">
-              <button
-                onClick={() => setShowAdd(false)}
-                className="px-4 py-2 text-sm text-slate-600 bg-white border border-slate-200 rounded-lg hover:bg-slate-50 cursor-pointer"
-              >
-                Annuleren
-              </button>
-              <button
-                onClick={handleAdd}
-                disabled={!newName.trim() || !newUrl.trim()}
-                className="px-4 py-2 text-sm text-white bg-3bm-teal rounded-lg hover:bg-3bm-teal-dark disabled:opacity-50 cursor-pointer"
-              >
-                Toevoegen
               </button>
             </div>
           </div>

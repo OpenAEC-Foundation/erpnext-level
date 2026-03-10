@@ -1,12 +1,11 @@
 /**
  * Terminal WebSocket handler.
  *
- * Spawns a local `claude` CLI process and bridges stdin/stdout/stderr
+ * Spawns a shell process and bridges stdin/stdout/stderr
  * to a WebSocket connection. The frontend renders output via xterm.js.
  *
- * Each WebSocket connection gets its own claude process.
- * Instance context (ERPNext URL, API credentials) is passed as
- * a system prompt so Claude knows which instance to work with.
+ * Each WebSocket connection gets its own shell process.
+ * On Windows: PowerShell, on Linux/macOS: bash.
  */
 
 import { spawn, type ChildProcess } from "child_process";
@@ -20,95 +19,88 @@ interface TerminalSession {
 
 const sessions = new Map<WebSocket, TerminalSession>();
 
-function buildSystemPrompt(instanceId: string): string {
-  const inst = getInstance(instanceId);
-  if (!inst) {
-    const all = getAllInstances();
-    return `ERPNext Level Dashboard. Beschikbare instances: ${all.map((i) => `${i.name} (${i.url})`).join(", ")}`;
-  }
-
-  return [
-    `Je bent verbonden met ERPNext instance "${inst.name}" op ${inst.url}.`,
-    `API authenticatie: token ${inst.apiKey}:${inst.apiSecret}`,
-    `Gebruik deze credentials voor alle ERPNext API calls.`,
-    `Basis API URL: ${inst.url}/api/resource/<DocType> voor CRUD, ${inst.url}/api/method/<method> voor methodes.`,
-    `Antwoord altijd in het Nederlands tenzij anders gevraagd.`,
-  ].join("\n");
-}
-
 export function handleTerminalConnection(ws: WebSocket, instanceId: string): void {
   console.log(`[terminal] New connection for instance: ${instanceId}`);
 
-  const systemPrompt = buildSystemPrompt(instanceId);
+  const inst = getInstance(instanceId);
+  const isWindows = process.platform === "win32";
 
-  // Spawn claude CLI in interactive mode
-  const claudeProcess = spawn("claude", [], {
+  // Choose shell based on OS
+  const shell = isWindows ? "powershell.exe" : "bash";
+  const shellArgs = isWindows ? ["-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass"] : ["--login"];
+
+  const shellProcess = spawn(shell, shellArgs, {
     stdio: ["pipe", "pipe", "pipe"],
-    shell: true,
     env: {
       ...process.env,
-      // Force color output for better terminal experience
       FORCE_COLOR: "1",
       TERM: "xterm-256color",
+      // Make ERPNext instance info available as env vars
+      ERPNEXT_INSTANCE: instanceId,
+      ERPNEXT_URL: inst?.url || "",
+      ERPNEXT_NAME: inst?.name || "",
     },
+    cwd: process.env.HOME || process.env.USERPROFILE || process.cwd(),
   });
 
-  sessions.set(ws, { process: claudeProcess, instanceId });
+  sessions.set(ws, { process: shellProcess, instanceId });
 
-  // Send initial system prompt to claude
-  if (claudeProcess.stdin) {
-    // Give claude a moment to start, then send context
+  // Send a welcome message with instance context
+  if (shellProcess.stdin) {
     setTimeout(() => {
-      const initPrompt = `/system ${systemPrompt}\n`;
-      claudeProcess.stdin?.write(initPrompt);
-    }, 500);
+      if (inst) {
+        const welcomeCmd = isWindows
+          ? `Write-Host "ERPNext: ${inst.name} (${inst.url})" -ForegroundColor Cyan\r\n`
+          : `echo -e "\\e[36mERPNext: ${inst.name} (${inst.url})\\e[0m"\n`;
+        shellProcess.stdin?.write(welcomeCmd);
+      }
+    }, 300);
   }
 
-  // Pipe claude stdout → WebSocket
-  claudeProcess.stdout?.on("data", (data: Buffer) => {
+  // Pipe shell stdout → WebSocket
+  shellProcess.stdout?.on("data", (data: Buffer) => {
     if (ws.readyState === ws.OPEN) {
       ws.send(JSON.stringify({ type: "output", data: data.toString("utf-8") }));
     }
   });
 
-  // Pipe claude stderr → WebSocket
-  claudeProcess.stderr?.on("data", (data: Buffer) => {
+  // Pipe shell stderr → WebSocket
+  shellProcess.stderr?.on("data", (data: Buffer) => {
     if (ws.readyState === ws.OPEN) {
       ws.send(JSON.stringify({ type: "output", data: data.toString("utf-8") }));
     }
   });
 
   // Process exit
-  claudeProcess.on("exit", (code) => {
-    console.log(`[terminal] Claude process exited with code ${code}`);
+  shellProcess.on("exit", (code) => {
+    console.log(`[terminal] Shell process exited with code ${code}`);
     if (ws.readyState === ws.OPEN) {
       ws.send(JSON.stringify({ type: "exit", code }));
     }
     sessions.delete(ws);
   });
 
-  claudeProcess.on("error", (err) => {
-    console.error(`[terminal] Claude process error:`, err);
+  shellProcess.on("error", (err) => {
+    console.error(`[terminal] Shell process error:`, err);
     if (ws.readyState === ws.OPEN) {
       ws.send(JSON.stringify({ type: "error", message: err.message }));
     }
   });
 
-  // WebSocket messages → claude stdin
+  // WebSocket messages → shell stdin
   ws.on("message", (rawMsg) => {
     try {
       const msg = JSON.parse(rawMsg.toString());
 
-      if (msg.type === "input" && claudeProcess.stdin) {
-        claudeProcess.stdin.write(msg.data);
+      if (msg.type === "input" && shellProcess.stdin) {
+        shellProcess.stdin.write(msg.data);
       } else if (msg.type === "resize") {
-        // Could be used with node-pty for terminal resize
-        // Not applicable with basic spawn, but kept for future
+        // Resize not supported without node-pty, but kept for future
       }
     } catch {
       // Raw text input fallback
-      if (claudeProcess.stdin) {
-        claudeProcess.stdin.write(rawMsg.toString());
+      if (shellProcess.stdin) {
+        shellProcess.stdin.write(rawMsg.toString());
       }
     }
   });

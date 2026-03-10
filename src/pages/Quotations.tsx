@@ -1,5 +1,5 @@
 import { useEffect, useState, useMemo } from "react";
-import { fetchList, getErpNextAppUrl } from "../lib/erpnext";
+import { fetchList, getErpNextLinkUrl } from "../lib/erpnext";
 import { FileBarChart, RefreshCw, Search, Filter, ChevronDown, Plus } from "lucide-react";
 import CompanySelect from "../components/CompanySelect";
 import DateRangeFilter from "../components/DateRangeFilter";
@@ -89,7 +89,7 @@ export default function Quotations() {
         <h2 className="text-2xl font-bold text-slate-800">Offertes</h2>
         <div className="flex items-center gap-2">
           <a
-            href={`${getErpNextAppUrl()}/quotation/new`}
+            href={`${getErpNextLinkUrl()}/quotation/new`}
             target="_blank"
             rel="noopener noreferrer"
             className="flex items-center gap-2 px-4 py-2 bg-white border border-slate-200 text-slate-700 rounded-lg hover:bg-slate-50 cursor-pointer"
@@ -207,7 +207,7 @@ export default function Quotations() {
               <tr key={q.name} className="border-b border-slate-100 hover:bg-slate-50">
                 <td className="px-4 py-3 text-sm font-medium">
                   <a
-                    href={`${getErpNextAppUrl()}/quotation/${q.name}`}
+                    href={`${getErpNextLinkUrl()}/quotation/${q.name}`}
                     target="_blank"
                     rel="noopener noreferrer"
                     className="text-3bm-teal hover:text-3bm-teal-dark hover:underline"

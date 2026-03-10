@@ -1,13 +1,19 @@
 import { useEffect, useState, useMemo, useRef, useCallback } from "react";
-import { fetchList, fetchDocument, createDocument, updateDocument, deleteDocument, getErpNextAppUrl } from "../lib/erpnext";
+import { fetchList, createDocument, updateDocument, deleteDocument, getErpNextLinkUrl } from "../lib/erpnext";
 import { useEmployees, useProjects, useLeaves } from "../lib/DataContext";
 import type { Page, ViewMode } from "../components/Sidebar";
-import { getActiveInstance } from "../lib/instances";
+import { getActiveInstance, getActiveInstanceId } from "../lib/instances";
 import {
-  Send, Search, Clock, FolderKanban, CheckSquare,
+  Send, Search, FolderKanban, CheckSquare,
   ExternalLink, ChevronDown, Cake,
   Palmtree, User, ListTodo, Plus, Trash2, Save, X,
+  GripVertical, Mail, Car,
 } from "lucide-react";
+import UrenBoekenWidget from "../components/UrenBoekenWidget";
+import { DndContext, closestCenter } from "@dnd-kit/core";
+import type { DragEndEvent } from "@dnd-kit/core";
+import { SortableContext, useSortable, verticalListSortingStrategy, arrayMove } from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
 
 /* ─── Types ─── */
 
@@ -19,15 +25,6 @@ interface Task {
   assigned_to: string;
   project: string;
   exp_end_date: string;
-}
-
-interface TimesheetDetail {
-  name: string;
-  parent: string;
-  activity_type: string;
-  hours: number;
-  project: string;
-  from_time: string;
 }
 
 /* ─── Constants ─── */
@@ -53,6 +50,262 @@ function isOverdue(date: string): boolean {
   return new Date(date) < new Date(new Date().toDateString());
 }
 
+/* ─── Widget types & config ─── */
+
+interface WidgetPlacement {
+  id: string;
+  col: number;
+}
+
+const ALL_WIDGETS: { id: string; label: string }[] = [
+  { id: "time-booking", label: "Uren boeken" },
+  { id: "km-booking", label: "Km boeken" },
+  { id: "tasks", label: "Taken bureaubreed" },
+  { id: "projects", label: "Projecten zoeken" },
+  { id: "todos", label: "Mijn ToDo's" },
+  { id: "email", label: "E-mail" },
+];
+
+const DEFAULT_LAYOUT: WidgetPlacement[] = [
+  { id: "time-booking", col: 0 },
+  { id: "km-booking", col: 0 },
+  { id: "tasks", col: 0 },
+  { id: "projects", col: 1 },
+  { id: "todos", col: 1 },
+  { id: "email", col: 1 },
+];
+
+function getLayoutKey(): string {
+  return `pref_${getActiveInstanceId()}_dashboard_widgets`;
+}
+
+function loadLayout(): WidgetPlacement[] {
+  try {
+    const raw = localStorage.getItem(getLayoutKey());
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+    }
+  } catch { /* use default */ }
+  return DEFAULT_LAYOUT;
+}
+
+function saveLayout(layout: WidgetPlacement[]) {
+  localStorage.setItem(getLayoutKey(), JSON.stringify(layout));
+}
+
+/* ─── Email Widget ─── */
+
+interface EmailMessage {
+  uid: number;
+  from: { name?: string; address?: string };
+  subject: string;
+  date: string;
+  seen: boolean;
+}
+
+function EmailWidget() {
+  const instanceId = getActiveInstanceId();
+  const host = localStorage.getItem(`pref_${instanceId}_imap_host`) || "";
+  const port = localStorage.getItem(`pref_${instanceId}_imap_port`) || "";
+  const user = localStorage.getItem(`pref_${instanceId}_imap_user`) || "";
+  const pass = localStorage.getItem(`pref_${instanceId}_imap_pass`) || "";
+
+  const configured = !!(host && user && pass);
+
+  const [messages, setMessages] = useState<EmailMessage[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    if (!configured) return;
+    setLoading(true);
+    setError("");
+
+    const params = new URLSearchParams({
+      host, port: port || "993", user, pass,
+      secure: localStorage.getItem(`pref_${instanceId}_imap_secure`) ?? "true",
+      folder: "INBOX",
+      limit: "5",
+    });
+
+    fetch(`/api/mail/messages?${params}`)
+      .then(async (res) => {
+        if (!res.ok) throw new Error(await res.text());
+        return res.json();
+      })
+      .then((data) => setMessages(Array.isArray(data) ? data.slice(0, 5) : []))
+      .catch((err) => setError(err instanceof Error ? err.message : "Fout bij ophalen e-mail"))
+      .finally(() => setLoading(false));
+  }, [configured, host, port, user, pass, instanceId]);
+
+  function formatDate(dateStr: string): string {
+    if (!dateStr) return "";
+    const d = new Date(dateStr);
+    const now = new Date();
+    if (d.toDateString() === now.toDateString()) {
+      return d.toLocaleTimeString("nl-NL", { hour: "2-digit", minute: "2-digit" });
+    }
+    return d.toLocaleDateString("nl-NL", { day: "numeric", month: "short" });
+  }
+
+  if (!configured) {
+    return (
+      <div className="text-sm text-slate-400 text-center py-6">
+        Stel e-mail in via Instellingen
+      </div>
+    );
+  }
+
+  if (loading) {
+    return <p className="text-center text-slate-400 py-6">Laden...</p>;
+  }
+
+  if (error) {
+    return <p className="text-center text-red-400 text-sm py-4">{error}</p>;
+  }
+
+  if (messages.length === 0) {
+    return <p className="text-center text-slate-400 text-sm py-6">Geen berichten</p>;
+  }
+
+  return (
+    <div className="space-y-1">
+      {messages.map((msg) => (
+        <div
+          key={msg.uid}
+          className={`px-3 py-2 rounded-lg hover:bg-slate-50 ${!msg.seen ? "bg-blue-50/40" : ""}`}
+        >
+          <div className="flex items-center justify-between gap-2">
+            <span className={`text-sm truncate ${!msg.seen ? "font-semibold text-slate-800" : "text-slate-600"}`}>
+              {msg.from?.name || msg.from?.address || "Onbekend"}
+            </span>
+            <span className="text-[10px] text-slate-400 flex-shrink-0">{formatDate(msg.date)}</span>
+          </div>
+          <p className={`text-sm truncate mt-0.5 ${!msg.seen ? "font-medium text-slate-700" : "text-slate-500"}`}>
+            {msg.subject || "(geen onderwerp)"}
+          </p>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/* ─── Sortable Widget Wrapper ─── */
+
+function SortableWidget({
+  id,
+  onRemove,
+  children,
+}: {
+  id: string;
+  onRemove: () => void;
+  children: React.ReactNode;
+}) {
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    transform,
+    transition,
+    isDragging,
+  } = useSortable({ id });
+
+  const style = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+    opacity: isDragging ? 0.5 : 1,
+  };
+
+  return (
+    <div ref={setNodeRef} style={style} className="relative group/widget">
+      {/* Drag handle + close button overlay */}
+      <div className="absolute top-2 right-2 z-10 flex items-center gap-1 opacity-0 group-hover/widget:opacity-100 transition-opacity">
+        <button
+          type="button"
+          className="cursor-grab active:cursor-grabbing p-1 rounded bg-white/80 hover:bg-slate-100 text-slate-400 hover:text-slate-600 shadow-sm border border-slate-200"
+          {...attributes}
+          {...listeners}
+        >
+          <GripVertical size={14} />
+        </button>
+        <button
+          type="button"
+          onClick={onRemove}
+          className="p-1 rounded bg-white/80 hover:bg-red-50 text-slate-400 hover:text-red-500 cursor-pointer shadow-sm border border-slate-200"
+          title="Widget verbergen"
+        >
+          <X size={12} />
+        </button>
+      </div>
+      {children}
+    </div>
+  );
+}
+
+/* ─── Droppable Column ─── */
+
+function WidgetColumn({
+  items,
+  onNavigate,
+  onRemove,
+}: {
+  items: WidgetPlacement[];
+  onNavigate: (page: Page) => void;
+  onRemove: (id: string) => void;
+}) {
+  const ids = items.map((w) => w.id);
+
+  function renderWidget(widgetId: string) {
+    let content: React.ReactNode;
+
+    switch (widgetId) {
+      case "time-booking":
+        content = <QuickTimeBookingInner />;
+        break;
+      case "km-booking":
+        content = <QuickKmBooking />;
+        break;
+      case "tasks":
+        content = <TaskListInner onNavigate={onNavigate} />;
+        break;
+      case "projects":
+        content = <ProjectSearchInner onNavigate={onNavigate} />;
+        break;
+      case "todos":
+        content = <MyTodoListInner />;
+        break;
+      case "email":
+        content = (
+          <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-5">
+            <div className="flex items-center gap-2 mb-4">
+              <Mail size={18} className="text-3bm-teal" />
+              <h3 className="font-semibold text-slate-800">E-mail</h3>
+            </div>
+            <EmailWidget />
+          </div>
+        );
+        break;
+      default:
+        return null;
+    }
+
+    return (
+      <SortableWidget key={widgetId} id={widgetId} onRemove={() => onRemove(widgetId)}>
+        {content}
+      </SortableWidget>
+    );
+  }
+
+  return (
+    <SortableContext items={ids} strategy={verticalListSortingStrategy}>
+      <div className="space-y-6">
+        {items.map((w) => renderWidget(w.id))}
+      </div>
+    </SortableContext>
+  );
+}
+
 /* ─── Main Dashboard ─── */
 
 interface DashboardProps {
@@ -65,23 +318,143 @@ export default function Dashboard({ onNavigate, viewMode }: DashboardProps) {
     return <EmployeeDashboard onNavigate={onNavigate} />;
   }
 
+  const [layout, setLayout] = useState<WidgetPlacement[]>(loadLayout);
+  const [addOpen, setAddOpen] = useState(false);
+  const addRef = useRef<HTMLDivElement>(null);
+
+  // Close dropdown on outside click
+  useEffect(() => {
+    function handleClick(e: MouseEvent) {
+      if (addRef.current && !addRef.current.contains(e.target as Node)) setAddOpen(false);
+    }
+    document.addEventListener("mousedown", handleClick);
+    return () => document.removeEventListener("mousedown", handleClick);
+  }, []);
+
+  const leftWidgets = layout.filter((w) => w.col === 0);
+  const rightWidgets = layout.filter((w) => w.col === 1);
+  const hiddenWidgets = ALL_WIDGETS.filter((w) => !layout.find((l) => l.id === w.id));
+
+  function handleRemove(id: string) {
+    const next = layout.filter((w) => w.id !== id);
+    setLayout(next);
+    saveLayout(next);
+  }
+
+  function handleAdd(id: string) {
+    const next = [...layout, { id, col: 1 }];
+    setLayout(next);
+    saveLayout(next);
+    setAddOpen(false);
+  }
+
+  function handleDragEnd(event: DragEndEvent) {
+    const { active, over } = event;
+    if (!over || active.id === over.id) return;
+
+    const activeId = active.id as string;
+    const overId = over.id as string;
+
+    const activeIdx = layout.findIndex((w) => w.id === activeId);
+    const overIdx = layout.findIndex((w) => w.id === overId);
+
+    if (activeIdx === -1 || overIdx === -1) return;
+
+    // Move the active widget to the same column as the over widget
+    const targetCol = layout[overIdx].col;
+
+    // Get all widgets in the target column (including the moved one placed at target col)
+    const newLayout = [...layout];
+    newLayout[activeIdx] = { ...newLayout[activeIdx], col: targetCol };
+
+    // Now reorder within the full layout: extract column items, reorder, put back
+    const colItems = newLayout
+      .map((w, i) => ({ ...w, _origIdx: i }))
+      .filter((w) => w.col === targetCol);
+
+    const colActiveIdx = colItems.findIndex((w) => w.id === activeId);
+    const colOverIdx = colItems.findIndex((w) => w.id === overId);
+
+    if (colActiveIdx !== -1 && colOverIdx !== -1) {
+      const reordered = arrayMove(colItems, colActiveIdx, colOverIdx);
+      // Rebuild layout: non-target-col items stay, target-col items get reordered
+      const otherItems = newLayout.filter((w) => w.col !== targetCol);
+      const finalLayout = [
+        ...otherItems,
+        ...reordered.map((w) => ({ id: w.id, col: w.col })),
+      ];
+      // Preserve original ordering: left col first, then right col
+      const sorted = [
+        ...finalLayout.filter((w) => w.col === 0),
+        ...finalLayout.filter((w) => w.col === 1),
+      ];
+      setLayout(sorted);
+      saveLayout(sorted);
+    } else {
+      setLayout(newLayout);
+      saveLayout(newLayout);
+    }
+  }
+
   return (
     <div className="p-6 space-y-6">
       <h2 className="text-2xl font-bold text-slate-800">{getActiveInstance().name} Dashboard</h2>
 
-      <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
-        {/* Left column */}
-        <div className="space-y-6">
-          <QuickTimeBooking />
-          <ProjectSearch onNavigate={onNavigate} />
-          <MyTodoList />
-        </div>
+      <DndContext collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
+        <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
+          {/* Left column */}
+          <WidgetColumn items={leftWidgets} onNavigate={onNavigate} onRemove={handleRemove} />
 
-        {/* Right column */}
-        <TaskList onNavigate={onNavigate} />
-      </div>
+          {/* Right column */}
+          <WidgetColumn items={rightWidgets} onNavigate={onNavigate} onRemove={handleRemove} />
+        </div>
+      </DndContext>
+
+      {/* Add widget button */}
+      {hiddenWidgets.length > 0 && (
+        <div ref={addRef} className="relative inline-block">
+          <button
+            onClick={() => setAddOpen((o) => !o)}
+            className="flex items-center gap-2 px-4 py-2 text-sm text-slate-600 bg-white border border-dashed border-slate-300 rounded-lg hover:border-3bm-teal hover:text-3bm-teal cursor-pointer"
+          >
+            <Plus size={16} />
+            Widget toevoegen
+          </button>
+          {addOpen && (
+            <div className="absolute bottom-full left-0 mb-2 bg-white border border-slate-200 rounded-lg shadow-lg z-20 py-1 min-w-[200px]">
+              {hiddenWidgets.map((w) => (
+                <button
+                  key={w.id}
+                  onClick={() => handleAdd(w.id)}
+                  className="w-full text-left px-4 py-2 text-sm text-slate-700 hover:bg-slate-50 cursor-pointer"
+                >
+                  {w.label}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
+}
+
+/* ─── Inner widget wrappers (no outer card, used inside SortableWidget) ─── */
+
+function QuickTimeBookingInner() {
+  return <UrenBoekenWidget showWeekTable={false} />;
+}
+
+function ProjectSearchInner({ onNavigate }: { onNavigate: (page: Page) => void }) {
+  return <ProjectSearch onNavigate={onNavigate} />;
+}
+
+function MyTodoListInner() {
+  return <MyTodoList />;
+}
+
+function TaskListInner({ onNavigate }: { onNavigate: (page: Page) => void }) {
+  return <TaskList onNavigate={onNavigate} />;
 }
 
 /* ─── Employee Dashboard ─── */
@@ -161,7 +534,8 @@ function EmployeeDashboard({ onNavigate }: { onNavigate: (page: Page) => void })
       <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
         {/* Left column */}
         <div className="space-y-6">
-          <QuickTimeBooking />
+          <UrenBoekenWidget showWeekTable={false} />
+          <QuickKmBooking />
 
           {/* Vacation balance */}
           <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-5">
@@ -298,7 +672,7 @@ function MyTaskList({ onNavigate, userEmail }: { onNavigate: (page: Page) => voi
           tasks.map((t) => (
             <a
               key={t.name}
-              href={`${getErpNextAppUrl()}/app/task/${t.name}`}
+              href={`${getErpNextLinkUrl()}/task/${t.name}`}
               target="_blank"
               rel="noopener noreferrer"
               className="flex items-start gap-3 px-3 py-2.5 rounded-lg hover:bg-slate-50 group"
@@ -333,233 +707,71 @@ function MyTaskList({ onNavigate, userEmail }: { onNavigate: (page: Page) => voi
   );
 }
 
-/* ─── Quick Time Booking ─── */
+/* ─── Quick Km Booking ─── */
 
-function QuickTimeBooking() {
+function QuickKmBooking() {
   const allEmployees = useEmployees();
-  const projects = useProjects();
-  const [activityTypes, setActivityTypes] = useState<string[]>([]);
-  const [employee, setEmployee] = useState(localStorage.getItem("erpnext_default_employee") || "HR-EMP-00003");
-  const [project, setProject] = useState("");
-  const [projectSearch, setProjectSearch] = useState("");
-  const [projectOpen, setProjectOpen] = useState(false);
-  const [task, setTask] = useState("");
-  const [taskSearch, setTaskSearch] = useState("");
-  const [taskOpen, setTaskOpen] = useState(false);
-  const [tasks, setTasks] = useState<{ name: string; subject: string }[]>([]);
-  const [activityType, setActivityType] = useState("Execution");
+  const [employee, setEmployee] = useState(() => {
+    const instanceId = getActiveInstance().id;
+    return localStorage.getItem(`pref_${instanceId}_employee`) || localStorage.getItem("erpnext_default_employee") || "";
+  });
   const [date, setDate] = useState(new Date().toISOString().split("T")[0]);
-  const [fromTime, setFromTime] = useState("08:00");
-  const [toTime, setToTime] = useState("17:00");
+  const [departure, setDeparture] = useState("");
+  const [destination, setDestination] = useState("");
+  const [km, setKm] = useState("");
   const [description, setDescription] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [success, setSuccess] = useState("");
   const [formError, setFormError] = useState("");
-  const projectRef = useRef<HTMLDivElement>(null);
-  const taskRef = useRef<HTMLDivElement>(null);
-
-  // Day entries
-  const [dayEntries, setDayEntries] = useState<TimesheetDetail[]>([]);
-  const [loadingEntries, setLoadingEntries] = useState(false);
-
-  // Last 3 bookings by this employee
-  const [recentEntries, setRecentEntries] = useState<TimesheetDetail[]>([]);
+  const [recentRequests, setRecentRequests] = useState<{ name: string; travel_from: string; travel_to: string; total_distance: number; travel_date: string; description?: string }[]>([]);
   const [loadingRecent, setLoadingRecent] = useState(false);
-
-  useEffect(() => {
-    if (!employee) { setRecentEntries([]); return; }
-    setLoadingRecent(true);
-    fetchList<{ name: string }>("Timesheet", {
-      fields: ["name"],
-      filters: [["employee", "=", employee], ["docstatus", "!=", 2]],
-      limit_page_length: 5,
-      order_by: "modified desc",
-    }).then((timesheets) => {
-      if (timesheets.length === 0) { setRecentEntries([]); setLoadingRecent(false); return; }
-      const tsNames = timesheets.map((t) => t.name);
-      fetchList<TimesheetDetail>("Timesheet Detail", {
-        fields: ["name", "parent", "activity_type", "hours", "project", "from_time"],
-        filters: [["parent", "in", tsNames], ["parenttype", "=", "Timesheet"]],
-        limit_page_length: 50,
-        order_by: "from_time desc",
-      }).then((details) => setRecentEntries(details.slice(0, 3)))
-        .catch(() => setRecentEntries([]))
-        .finally(() => setLoadingRecent(false));
-    }).catch(() => { setRecentEntries([]); setLoadingRecent(false); });
-  }, [employee, success]);
-
-  // Calculate hours from time range
-  const hours = useMemo(() => {
-    if (!fromTime || !toTime) return 0;
-    const [fh, fm] = fromTime.split(":").map(Number);
-    const [th, tm] = toTime.split(":").map(Number);
-    const diff = (th + tm / 60) - (fh + fm / 60);
-    return Math.max(0, Math.round(diff * 10) / 10);
-  }, [fromTime, toTime]);
-
-  useEffect(() => {
-    fetchList<{ name: string }>("Activity Type", { fields: ["name"], limit_page_length: 0 })
-      .then((list) => {
-        const names = list.map((a) => a.name);
-        setActivityTypes(names);
-        if (!names.includes("Execution")) setActivityType(names[0] || "");
-      });
-  }, []);
-
-  // Load tasks when project changes
-  useEffect(() => {
-    if (!project) { setTasks([]); setTask(""); return; }
-    fetchList<{ name: string; subject: string }>("Task", {
-      fields: ["name", "subject"],
-      filters: [["project", "=", project], ["status", "not in", ["Cancelled", "Completed", "Template"]]],
-      limit_page_length: 100,
-      order_by: "modified desc",
-    }).then(setTasks).catch(() => setTasks([]));
-  }, [project]);
 
   const activeEmployees = useMemo(
     () => allEmployees.filter((e) => e.status === "Active"),
     [allEmployees]
   );
 
-  // Only active projects, sorted by name ascending (low → high)
-  const activeProjects = useMemo(() =>
-    projects
-      .filter((p) => p.status === "Open")
-      .sort((a, b) => a.name.localeCompare(b.name)),
-    [projects]
-  );
-
-  const filteredProjects = useMemo(() => {
-    if (!projectSearch.trim()) return activeProjects.slice(0, 30);
-    const q = projectSearch.toLowerCase();
-    return activeProjects.filter(
-      (p) => p.name.toLowerCase().includes(q) || p.project_name?.toLowerCase().includes(q)
-    ).slice(0, 30);
-  }, [activeProjects, projectSearch]);
-
-  const filteredTasks = useMemo(() => {
-    if (!taskSearch.trim()) return tasks.slice(0, 30);
-    const q = taskSearch.toLowerCase();
-    return tasks.filter(
-      (t) => t.name.toLowerCase().includes(q) || t.subject?.toLowerCase().includes(q)
-    ).slice(0, 30);
-  }, [tasks, taskSearch]);
-
-  // Load day entries (with small delay after booking to let ERPNext commit)
+  // Load recent travel requests
   useEffect(() => {
-    if (!date) { setDayEntries([]); return; }
-    const delay = success ? 800 : 0; // Wait a bit after a successful booking
-    const timer = setTimeout(() => {
-      setLoadingEntries(true);
-      fetchList<TimesheetDetail>("Timesheet Detail", {
-        fields: ["name", "parent", "activity_type", "hours", "project", "from_time"],
-        filters: [
-          ["from_time", ">=", `${date} 00:00:00`],
-          ["from_time", "<=", `${date} 23:59:59`],
-          ["parenttype", "=", "Timesheet"],
-        ],
-        limit_page_length: 50,
-        order_by: "from_time asc",
-      })
-        .then(setDayEntries)
-        .catch(() => setDayEntries([]))
-        .finally(() => setLoadingEntries(false));
-    }, delay);
-    return () => clearTimeout(timer);
-  }, [date, success]);
-
-  useEffect(() => {
-    function handleClick(e: MouseEvent) {
-      if (projectRef.current && !projectRef.current.contains(e.target as Node)) setProjectOpen(false);
-      if (taskRef.current && !taskRef.current.contains(e.target as Node)) setTaskOpen(false);
-    }
-    document.addEventListener("mousedown", handleClick);
-    return () => document.removeEventListener("mousedown", handleClick);
-  }, []);
-
-  // Get Monday of the week for a given date
-  function getWeekMonday(d: string): string {
-    const dt = new Date(d + "T00:00:00");
-    const day = dt.getDay();
-    const diff = day === 0 ? -6 : 1 - day; // Monday = 1
-    dt.setDate(dt.getDate() + diff);
-    return dt.toISOString().split("T")[0];
-  }
-
-  function getWeekSunday(d: string): string {
-    const mon = new Date(getWeekMonday(d) + "T00:00:00");
-    mon.setDate(mon.getDate() + 6);
-    return mon.toISOString().split("T")[0];
-  }
-
-  // Current week timesheet
-  const [weekTimesheet, setWeekTimesheet] = useState<string | null>(null);
-
-  // Find existing week timesheet
-  useEffect(() => {
-    if (!employee || !date) return;
-    const monday = getWeekMonday(date);
-    const sunday = getWeekSunday(date);
-    fetchList<{ name: string }>("Timesheet", {
-      fields: ["name"],
-      filters: [
-        ["employee", "=", employee],
-        ["start_date", ">=", monday],
-        ["start_date", "<=", sunday],
-        ["docstatus", "=", 0], // Draft only
-      ],
-      limit_page_length: 1,
-      order_by: "modified desc",
-    }).then((list) => {
-      setWeekTimesheet(list.length > 0 ? list[0].name : null);
-    }).catch(() => setWeekTimesheet(null));
-  }, [employee, date, success]);
+    if (!employee) { setRecentRequests([]); return; }
+    setLoadingRecent(true);
+    fetchList<{ name: string; travel_from: string; travel_to: string; total_distance: number; travel_date: string; description: string }>(
+      "Travel Request",
+      {
+        fields: ["name", "travel_from", "travel_to", "total_distance", "travel_date", "description"],
+        filters: [["employee", "=", employee]],
+        limit_page_length: 3,
+        order_by: "creation desc",
+      }
+    )
+      .then(setRecentRequests)
+      .catch(() => setRecentRequests([]))
+      .finally(() => setLoadingRecent(false));
+  }, [employee, success]);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    if (!employee || hours <= 0 || !activityType) return;
+    if (!employee || !km || !departure || !destination) return;
     setSubmitting(true);
     setFormError("");
     setSuccess("");
     try {
       const company = localStorage.getItem("erpnext_default_company") || undefined;
-      const newTimeLog = {
-        activity_type: activityType,
-        from_time: `${date} ${fromTime}:00`,
-        to_time: `${date} ${toTime}:00`,
-        hours,
-        project: project || undefined,
-        task: task || undefined,
+      const doc = await createDocument<{ name: string }>("Travel Request", {
+        employee,
+        company,
+        travel_type: "Routes",
+        travel_date: date,
+        travel_from: departure,
+        travel_to: destination,
+        total_distance: parseFloat(km),
         description: description || undefined,
-      };
-
-      let tsName: string;
-
-      if (weekTimesheet) {
-        // Add time_log to existing week timesheet
-        const existing = await fetchDocument<{ name: string; time_logs: Record<string, unknown>[] }>("Timesheet", weekTimesheet);
-        const updatedLogs = [...(existing.time_logs || []), newTimeLog];
-        await updateDocument("Timesheet", weekTimesheet, { time_logs: updatedLogs });
-        tsName = weekTimesheet;
-      } else {
-        // Create new timesheet for this week
-        const doc = await createDocument<{ name: string }>("Timesheet", {
-          employee,
-          company,
-          time_logs: [newTimeLog],
-        });
-        tsName = doc.name;
-      }
-
-      setSuccess(`Uren geboekt in ${tsName}!`);
-      setFromTime("08:00");
-      setToTime("17:00");
+      });
+      setSuccess(`Km geboekt: ${doc.name}`);
+      setDeparture("");
+      setDestination("");
+      setKm("");
       setDescription("");
-      setProject("");
-      setProjectSearch("");
-      setTask("");
-      setTaskSearch("");
       setTimeout(() => setSuccess(""), 5000);
     } catch (err) {
       setFormError(err instanceof Error ? err.message : "Onbekende fout");
@@ -568,33 +780,11 @@ function QuickTimeBooking() {
     }
   }
 
-  const selectedProject = projects.find((p) => p.name === project);
-  const selectedTask = tasks.find((t) => t.name === task);
-  const dayTotal = dayEntries.reduce((s, e) => s + e.hours, 0);
-
   return (
     <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-5">
       <div className="flex items-center gap-2 mb-4">
-        <Clock size={18} className="text-3bm-teal" />
-        <h3 className="font-semibold text-slate-800">Uren boeken</h3>
-        <div className="ml-auto flex items-center gap-3 text-sm text-slate-500">
-          {weekTimesheet && (
-            <a
-              href={`${getErpNextAppUrl()}/app/timesheet/${weekTimesheet}`}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="text-[10px] font-mono text-3bm-teal hover:underline"
-              title="Week-timesheet openen"
-            >
-              {weekTimesheet}
-            </a>
-          )}
-          {!loadingEntries && dayTotal > 0 && (
-            <span>
-              Vandaag: <span className="font-semibold text-slate-700">{dayTotal.toLocaleString("nl-NL", { maximumFractionDigits: 1 })} uur</span>
-            </span>
-          )}
-        </div>
+        <Car size={18} className="text-3bm-teal" />
+        <h3 className="font-semibold text-slate-800">Km boeken</h3>
       </div>
 
       {success && <div className="mb-3 p-2 bg-green-50 border border-green-200 rounded-lg text-green-700 text-sm">{success}</div>}
@@ -612,163 +802,82 @@ function QuickTimeBooking() {
               ))}
             </select>
           </div>
-          <div ref={projectRef} className="relative">
-            <label className="block text-xs font-medium text-slate-600 mb-1">Project</label>
-            <input
-              type="text"
-              value={projectOpen ? projectSearch : (selectedProject ? `${selectedProject.name} — ${selectedProject.project_name}` : projectSearch)}
-              onChange={(e) => { setProjectSearch(e.target.value); setProjectOpen(true); if (!e.target.value) { setProject(""); setTask(""); } }}
-              onFocus={() => setProjectOpen(true)}
-              placeholder="Zoek project..."
-              className="w-full px-2.5 py-2 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-3bm-teal"
-            />
-            {projectOpen && (
-              <div className="absolute top-full left-0 right-0 mt-1 bg-white border border-slate-200 rounded-lg shadow-lg z-20 max-h-48 overflow-y-auto">
-                <button type="button" onClick={() => { setProject(""); setTask(""); setProjectSearch(""); setProjectOpen(false); }}
-                  className="w-full text-left px-3 py-1.5 hover:bg-slate-50 text-sm text-slate-400 cursor-pointer">
-                  Geen project
-                </button>
-                {filteredProjects.map((p) => (
-                  <button key={p.name} type="button"
-                    onClick={() => { setProject(p.name); setProjectSearch(""); setProjectOpen(false); setTask(""); }}
-                    className={`w-full text-left px-3 py-1.5 hover:bg-slate-50 text-sm cursor-pointer ${project === p.name ? "bg-3bm-teal/5 text-3bm-teal-dark" : "text-slate-700"}`}>
-                    <span className="font-mono text-xs text-slate-400">{p.name}</span>
-                    <span className="ml-1.5">{p.project_name}</span>
-                  </button>
-                ))}
-              </div>
-            )}
-          </div>
-        </div>
-
-        {/* Task selector - only when project selected */}
-        {project && tasks.length > 0 && (
-          <div ref={taskRef} className="relative">
-            <label className="block text-xs font-medium text-slate-600 mb-1">Taak</label>
-            <input
-              type="text"
-              value={taskOpen ? taskSearch : (selectedTask ? `${selectedTask.name} — ${selectedTask.subject}` : taskSearch)}
-              onChange={(e) => { setTaskSearch(e.target.value); setTaskOpen(true); if (!e.target.value) setTask(""); }}
-              onFocus={() => setTaskOpen(true)}
-              placeholder="Zoek taak..."
-              className="w-full px-2.5 py-2 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-3bm-teal"
-            />
-            {taskOpen && (
-              <div className="absolute top-full left-0 right-0 mt-1 bg-white border border-slate-200 rounded-lg shadow-lg z-20 max-h-48 overflow-y-auto">
-                <button type="button" onClick={() => { setTask(""); setTaskSearch(""); setTaskOpen(false); }}
-                  className="w-full text-left px-3 py-1.5 hover:bg-slate-50 text-sm text-slate-400 cursor-pointer">
-                  Geen taak
-                </button>
-                {filteredTasks.map((t) => (
-                  <button key={t.name} type="button"
-                    onClick={() => { setTask(t.name); setTaskSearch(""); setTaskOpen(false); }}
-                    className={`w-full text-left px-3 py-1.5 hover:bg-slate-50 text-sm cursor-pointer ${task === t.name ? "bg-3bm-teal/5 text-3bm-teal-dark" : "text-slate-700"}`}>
-                    <span className="font-mono text-xs text-slate-400">{t.name}</span>
-                    <span className="ml-1.5 truncate">{t.subject}</span>
-                  </button>
-                ))}
-              </div>
-            )}
-          </div>
-        )}
-
-        <div className="grid grid-cols-5 gap-3">
-          <div>
-            <label className="block text-xs font-medium text-slate-600 mb-1">Type *</label>
-            <select value={activityType} onChange={(e) => setActivityType(e.target.value)} required
-              className="w-full px-2.5 py-2 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-3bm-teal">
-              {activityTypes.map((at) => <option key={at} value={at}>{at}</option>)}
-            </select>
-          </div>
           <div>
             <label className="block text-xs font-medium text-slate-600 mb-1">Datum *</label>
             <input type="date" value={date} onChange={(e) => setDate(e.target.value)} required
               className="w-full px-2.5 py-2 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-3bm-teal" />
           </div>
+        </div>
+
+        <div className="grid grid-cols-3 gap-3">
           <div>
             <label className="block text-xs font-medium text-slate-600 mb-1">Van *</label>
-            <input type="time" value={fromTime} onChange={(e) => setFromTime(e.target.value)} required
+            <input type="text" value={departure} onChange={(e) => setDeparture(e.target.value)} required
+              placeholder="Vertrekpunt"
               className="w-full px-2.5 py-2 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-3bm-teal" />
           </div>
           <div>
-            <label className="block text-xs font-medium text-slate-600 mb-1">Tot *</label>
-            <input type="time" value={toTime} onChange={(e) => setToTime(e.target.value)} required
+            <label className="block text-xs font-medium text-slate-600 mb-1">Naar *</label>
+            <input type="text" value={destination} onChange={(e) => setDestination(e.target.value)} required
+              placeholder="Bestemming"
               className="w-full px-2.5 py-2 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-3bm-teal" />
           </div>
-          <div className="flex flex-col">
-            <label className="block text-xs font-medium text-slate-600 mb-1">{hours > 0 ? `${hours} uur` : "—"}</label>
-            <button type="submit" disabled={submitting || !employee || hours <= 0 || !activityType}
-              className="w-full flex items-center justify-center gap-2 px-3 py-2 bg-3bm-teal text-white rounded-lg hover:bg-3bm-teal-dark disabled:opacity-50 text-sm font-medium cursor-pointer">
-              <Send size={14} />
-              {submitting ? "..." : "Boeken"}
-            </button>
+          <div>
+            <label className="block text-xs font-medium text-slate-600 mb-1">Km *</label>
+            <input type="number" step="0.1" min="0" value={km} onChange={(e) => setKm(e.target.value)} required
+              placeholder="Afstand"
+              className="w-full px-2.5 py-2 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-3bm-teal" />
           </div>
         </div>
 
-        <div>
-          <input type="text" value={description} onChange={(e) => setDescription(e.target.value)}
-            placeholder="Omschrijving (optioneel)"
-            className="w-full px-2.5 py-2 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-3bm-teal" />
+        <div className="flex gap-3">
+          <div className="flex-1">
+            <input type="text" value={description} onChange={(e) => setDescription(e.target.value)}
+              placeholder="Omschrijving (optioneel)"
+              className="w-full px-2.5 py-2 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-3bm-teal" />
+          </div>
+          <button type="submit" disabled={submitting || !employee || !km || !departure || !destination}
+            className="flex items-center gap-2 px-4 py-2 bg-3bm-teal text-white rounded-lg hover:bg-3bm-teal-dark disabled:opacity-50 text-sm font-medium cursor-pointer">
+            <Send size={14} />
+            {submitting ? "..." : "Boeken"}
+          </button>
         </div>
       </form>
 
-      {/* Last 3 bookings by employee */}
+      {/* Recent travel requests */}
       {employee && (
         <div className="mt-4 pt-3 border-t border-slate-100">
-          <p className="text-xs font-medium text-slate-500 mb-2">Laatste 3 boekingen</p>
+          <p className="text-xs font-medium text-slate-500 mb-2">Laatste 3 ritten</p>
           {loadingRecent ? (
             <p className="text-xs text-slate-400">Laden...</p>
-          ) : recentEntries.length === 0 ? (
-            <p className="text-xs text-slate-400">Geen eerdere boekingen</p>
+          ) : recentRequests.length === 0 ? (
+            <p className="text-xs text-slate-400">Geen eerdere ritten</p>
           ) : (
-            <div className="space-y-1">
-              {recentEntries.map((entry) => (
-                <div key={entry.name} className="flex items-center justify-between text-xs">
-                  <div className="flex items-center gap-2 text-slate-600">
-                    <span className="text-slate-400 w-20 shrink-0">
-                      {new Date(entry.from_time).toLocaleDateString("nl-NL", { day: "numeric", month: "short" })}
+            <div className="space-y-2">
+              {recentRequests.map((req) => (
+                <div key={req.name} className="bg-slate-50 rounded-lg px-3 py-2">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2 min-w-0">
+                      <span className="text-xs text-slate-400 shrink-0">
+                        {req.travel_date ? new Date(req.travel_date + "T00:00:00").toLocaleDateString("nl-NL", { day: "numeric", month: "short" }) : ""}
+                      </span>
+                      <span className="text-xs text-slate-700 truncate">
+                        {req.travel_from || "?"} &rarr; {req.travel_to || "?"}
+                      </span>
+                    </div>
+                    <span className="text-xs font-bold text-slate-700 shrink-0 ml-2">
+                      {(req.total_distance || 0).toLocaleString("nl-NL", { maximumFractionDigits: 1 })} km
                     </span>
-                    <a href={`${getErpNextAppUrl()}/app/timesheet/${entry.parent}`} target="_blank" rel="noopener noreferrer"
-                      className="font-mono text-3bm-teal hover:underline">{entry.parent}</a>
-                    <span className="bg-slate-100 px-1.5 py-0.5 rounded">{entry.activity_type}</span>
-                    {entry.project && <span className="text-slate-400 truncate max-w-[120px]">{entry.project}</span>}
                   </div>
-                  <span className="font-semibold text-slate-700">{entry.hours.toLocaleString("nl-NL", { maximumFractionDigits: 1 })}u</span>
+                  {req.description && (
+                    <p className="text-[11px] text-slate-500 mt-0.5 truncate">{req.description}</p>
+                  )}
                 </div>
               ))}
             </div>
           )}
         </div>
       )}
-
-      {/* Day entries summary */}
-      <div className="mt-4 pt-3 border-t border-slate-100">
-        <p className="text-xs font-medium text-slate-500 mb-2">
-          Geboekt op {new Date(date + "T00:00:00").toLocaleDateString("nl-NL", { weekday: "long", day: "numeric", month: "short" })}
-        </p>
-        {loadingEntries ? (
-          <p className="text-xs text-slate-400">Laden...</p>
-        ) : dayEntries.length === 0 ? (
-          <p className="text-xs text-slate-400">Nog geen uren geboekt</p>
-        ) : (
-          <div className="space-y-1">
-            {dayEntries.map((entry) => (
-              <div key={entry.name} className="flex items-center justify-between text-xs">
-                <div className="flex items-center gap-2 text-slate-600">
-                  <a href={`${getErpNextAppUrl()}/app/timesheet/${entry.parent}`} target="_blank" rel="noopener noreferrer"
-                    className="font-mono text-3bm-teal hover:underline">{entry.parent}</a>
-                  <span className="bg-slate-100 px-1.5 py-0.5 rounded">{entry.activity_type}</span>
-                  {entry.project && <span className="text-slate-400">{entry.project}</span>}
-                </div>
-                <span className="font-semibold text-slate-700">{entry.hours.toLocaleString("nl-NL", { maximumFractionDigits: 1 })}u</span>
-              </div>
-            ))}
-            <div className="pt-1 flex justify-end text-xs font-semibold text-slate-700">
-              Totaal: {dayTotal.toLocaleString("nl-NL", { maximumFractionDigits: 1 })} uur
-            </div>
-          </div>
-        )}
-      </div>
     </div>
   );
 }
@@ -825,7 +934,7 @@ function ProjectSearch({ onNavigate }: { onNavigate: (page: Page) => void }) {
           {results.map((p) => (
             <a
               key={p.name}
-              href={`${getErpNextAppUrl()}/app/project/${p.name}`}
+              href={`${getErpNextLinkUrl()}/project/${p.name}`}
               target="_blank"
               rel="noopener noreferrer"
               className="flex items-center justify-between px-3 py-2.5 rounded-lg hover:bg-slate-50 group"
@@ -1132,7 +1241,7 @@ function MyTodoList() {
                   </div>
                   {todo.reference_type && todo.reference_name && (
                     <p className="text-[10px] text-slate-400">
-                      Ref: {todo.reference_type} → <a href={`${getErpNextAppUrl()}/app/${todo.reference_type.toLowerCase().replace(/ /g, "-")}/${todo.reference_name}`}
+                      Ref: {todo.reference_type} → <a href={`${getErpNextLinkUrl()}/${todo.reference_type.toLowerCase().replace(/ /g, "-")}/${todo.reference_name}`}
                         target="_blank" rel="noopener noreferrer" className="text-3bm-teal hover:underline">{todo.reference_name}</a>
                     </p>
                   )}
@@ -1269,7 +1378,7 @@ function TaskList({ onNavigate }: { onNavigate: (page: Page) => void }) {
   const allStatuses = ["Open", "Working", "Pending Review", "Overdue", "Completed", "Cancelled"];
 
   return (
-    <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-5 flex flex-col" style={{ maxHeight: "calc(100vh - 120px)" }}>
+    <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-5 flex flex-col" style={{ maxHeight: "350px" }}>
       <div className="flex items-center gap-2 mb-4">
         <CheckSquare size={18} className="text-3bm-teal" />
         <button onClick={() => onNavigate("tasks")} className="font-semibold text-slate-800 hover:text-3bm-teal cursor-pointer">Taken bureaubreed &rarr;</button>
@@ -1331,7 +1440,7 @@ function TaskList({ onNavigate }: { onNavigate: (page: Page) => void }) {
           filtered.map((t) => (
             <a
               key={t.name}
-              href={`${getErpNextAppUrl()}/app/task/${t.name}`}
+              href={`${getErpNextLinkUrl()}/task/${t.name}`}
               target="_blank"
               rel="noopener noreferrer"
               className="flex items-start gap-3 px-3 py-2.5 rounded-lg hover:bg-slate-50 group"

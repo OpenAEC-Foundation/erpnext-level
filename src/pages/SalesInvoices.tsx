@@ -1,5 +1,5 @@
 import { useEffect, useState, useMemo } from "react";
-import { fetchCount, fetchList, callMethod, getErpNextAppUrl } from "../lib/erpnext";
+import { fetchCount, fetchList, callMethod, getErpNextLinkUrl } from "../lib/erpnext";
 import {
   FileText, RefreshCw, Filter, Clock, TrendingUp, Search,
   AlertTriangle, Send, ChevronDown, ChevronUp, ExternalLink, Plus,
@@ -380,7 +380,7 @@ export default function SalesInvoices() {
         <h2 className="text-2xl font-bold text-slate-800">Verkoopfacturen</h2>
         <div className="flex items-center gap-2">
           <a
-            href={`${getErpNextAppUrl()}/sales-invoice/new`}
+            href={`${getErpNextLinkUrl()}/sales-invoice/new`}
             target="_blank"
             rel="noopener noreferrer"
             className="flex items-center gap-2 px-4 py-2 bg-white border border-slate-200 text-slate-700 rounded-lg hover:bg-slate-50 cursor-pointer"
@@ -389,7 +389,7 @@ export default function SalesInvoices() {
             Nieuw
           </a>
           <a
-            href={`${getErpNextAppUrl()}/sales-invoice?company=${encodeURIComponent(company)}`}
+            href={`${getErpNextLinkUrl()}/sales-invoice?company=${encodeURIComponent(company)}`}
             target="_blank" rel="noopener noreferrer"
             className="flex items-center gap-2 px-3 py-2 text-sm text-slate-600 bg-white border border-slate-200 rounded-lg hover:bg-slate-50"
           >

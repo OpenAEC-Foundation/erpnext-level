@@ -1,8 +1,16 @@
+/**
+ * Instance management for the frontend.
+ *
+ * Instances are defined on the backend (instances.json + vault).
+ * The frontend only stores display preferences (active instance, themes).
+ * No credentials are stored in the browser.
+ */
+
 export interface InstanceTheme {
-  primary: string;       // main accent (buttons, links, highlights)
+  primary: string;
   primaryLight: string;
   primaryDark: string;
-  sidebar: string;       // sidebar background
+  sidebar: string;
   sidebarLight: string;
   sidebarDark: string;
 }
@@ -10,76 +18,121 @@ export interface InstanceTheme {
 export interface ERPInstance {
   id: string;
   name: string;
-  color: string;
   url: string;
-  apiKey: string;
-  apiSecret: string;
-  defaultCompany: string;
-  defaultEmployee: string;
-  baseDir: string;
+  color: string;
   theme?: InstanceTheme;
 }
 
-const STORAGE_KEY = "erpnext_instances";
 const ACTIVE_KEY = "erpnext_active_instance";
+const INSTANCES_KEY = "erpnext_instances_v2";
+
+/* ─── Built-in themes ─── */
 
 const THEME_3BM: InstanceTheme = {
-  primary: "#45b6a8",       // teal
+  primary: "#45b6a8",
   primaryLight: "#6bc9be",
   primaryDark: "#349488",
-  sidebar: "#451a44",       // purple
+  sidebar: "#451a44",
   sidebarLight: "#5e2a5c",
   sidebarDark: "#2d0f2c",
 };
 
 const THEME_IMPERTIO: InstanceTheme = {
-  primary: "#f97316",       // orange
+  primary: "#f97316",
   primaryLight: "#fb923c",
   primaryDark: "#ea580c",
-  sidebar: "#171717",       // black/near-black
+  sidebar: "#171717",
   sidebarLight: "#2a2a2a",
   sidebarDark: "#0a0a0a",
 };
 
 const THEME_SYMITECH: InstanceTheme = {
-  primary: "#3b82f6",       // blue
+  primary: "#3b82f6",
   primaryLight: "#60a5fa",
   primaryDark: "#2563eb",
-  sidebar: "#1e293b",       // slate-dark
+  sidebar: "#1e293b",
   sidebarLight: "#334155",
   sidebarDark: "#0f172a",
 };
 
-const DEFAULT_INSTANCE: ERPInstance = {
-  id: "3bm",
-  name: "3BM",
-  color: "#45b6a8",
-  url: "https://3bm.prilk.cloud",
-  apiKey: "",
-  apiSecret: "",
-  defaultCompany: "",
-  defaultEmployee: "",
-  baseDir: "",
-  theme: THEME_3BM,
+const THEME_DOMERA: InstanceTheme = {
+  primary: "#8dab9f",
+  primaryLight: "#a3bdb2",
+  primaryDark: "#6f8f80",
+  sidebar: "#332c2f",
+  sidebarLight: "#5d424c",
+  sidebarDark: "#231e20",
 };
 
-export function getInstances(): ERPInstance[] {
+const BUILTIN_THEMES: Record<string, InstanceTheme> = {
+  "3bm": THEME_3BM,
+  impertio: THEME_IMPERTIO,
+  symitech: THEME_SYMITECH,
+  domera: THEME_DOMERA,
+};
+
+const TAB_COLORS = [
+  "#45b6a8", "#f97316", "#3b82f6", "#8dab9f",
+  "#6366f1", "#e11d48", "#f59e0b", "#8b5cf6",
+  "#059669", "#dc2626",
+];
+
+/* ─── Instance list (synced from backend) ─── */
+
+let cachedInstances: ERPInstance[] = [];
+
+/** Load instance list from the backend. Called once on app init. */
+export async function loadInstancesFromBackend(): Promise<void> {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (raw) {
-      const parsed = JSON.parse(raw);
-      if (Array.isArray(parsed) && parsed.length > 0) return parsed;
-    }
-  } catch { /* ignore */ }
-  // Initialize with empty default — user configures via Settings or InstanceBar
-  const instances = [DEFAULT_INSTANCE];
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(instances));
-  return instances;
+    const res = await fetch("/api/instances");
+    if (!res.ok) return;
+    const { data } = await res.json() as {
+      data: { id: string; name: string; url: string }[];
+    };
+    if (!Array.isArray(data) || data.length === 0) return;
+
+    cachedInstances = data.map((inst, i) => ({
+      id: inst.id,
+      name: inst.name,
+      url: inst.url,
+      color: TAB_COLORS[i % TAB_COLORS.length],
+      theme: BUILTIN_THEMES[inst.id],
+    }));
+
+    // Persist for offline / quick startup
+    localStorage.setItem(INSTANCES_KEY, JSON.stringify(cachedInstances));
+
+    // Apply theme for active instance
+    applyTheme(getActiveInstance());
+  } catch {
+    // Backend not available — use cached
+  }
 }
 
-export function saveInstances(instances: ERPInstance[]): void {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(instances));
+export function getInstances(): ERPInstance[] {
+  if (cachedInstances.length > 0) return cachedInstances;
+
+  // Try localStorage cache
+  try {
+    const raw = localStorage.getItem(INSTANCES_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        cachedInstances = parsed;
+        return cachedInstances;
+      }
+    }
+  } catch { /* ignore */ }
+
+  // Fallback: default instance
+  cachedInstances = [{
+    id: "3bm", name: "3BM", url: "https://3bm.prilk.cloud",
+    color: TAB_COLORS[0], theme: THEME_3BM,
+  }];
+  return cachedInstances;
 }
+
+/* ─── Active instance ─── */
 
 export function getActiveInstanceId(): string {
   return localStorage.getItem(ACTIVE_KEY) || getInstances()[0]?.id || "3bm";
@@ -88,99 +141,29 @@ export function getActiveInstanceId(): string {
 export function getActiveInstance(): ERPInstance {
   const instances = getInstances();
   const activeId = getActiveInstanceId();
-  return instances.find((i) => i.id === activeId) || instances[0] || DEFAULT_INSTANCE;
+  return instances.find((i) => i.id === activeId) || instances[0];
 }
 
-/** Activate an instance: write its credentials to the standard localStorage keys
- *  so all existing code (erpnext.ts, Settings, etc.) keeps working. */
 export function activateInstance(id: string): void {
-  // First, save current instance's credentials back (in case Settings page changed them)
-  syncCurrentInstanceBack();
-
-  const instances = getInstances();
-  const inst = instances.find((i) => i.id === id);
+  const inst = getInstances().find((i) => i.id === id);
   if (!inst) return;
-
   localStorage.setItem(ACTIVE_KEY, id);
 
-  // Write to standard keys
-  localStorage.setItem("erpnext_url", inst.url);
-  localStorage.setItem("erpnext_api_key", inst.apiKey);
-  localStorage.setItem("erpnext_api_secret", inst.apiSecret);
-  if (inst.defaultCompany) {
-    localStorage.setItem("erpnext_default_company", inst.defaultCompany);
-  } else {
-    localStorage.removeItem("erpnext_default_company");
-  }
-  if (inst.defaultEmployee) {
-    localStorage.setItem("erpnext_default_employee", inst.defaultEmployee);
-  } else {
-    localStorage.removeItem("erpnext_default_employee");
-  }
-  if (inst.baseDir) {
-    localStorage.setItem("erpnext_base_dir", inst.baseDir);
-  } else {
-    localStorage.removeItem("erpnext_base_dir");
-  }
+  // Load instance-specific preferences into standard keys
+  const employee = localStorage.getItem(`pref_${id}_employee`) || "";
+  const company = localStorage.getItem(`pref_${id}_company`) || "";
+  if (employee) localStorage.setItem("erpnext_default_employee", employee);
+  else localStorage.removeItem("erpnext_default_employee");
+  if (company) localStorage.setItem("erpnext_default_company", company);
+  else localStorage.removeItem("erpnext_default_company");
 
-  // Apply theme
   applyTheme(inst);
 }
 
-/** Sync current standard localStorage keys back into the active instance object */
-export function syncCurrentInstanceBack(): void {
-  const instances = getInstances();
-  const activeId = getActiveInstanceId();
-  const idx = instances.findIndex((i) => i.id === activeId);
-  if (idx === -1) return;
+/* ─── Theme ─── */
 
-  instances[idx] = {
-    ...instances[idx],
-    url: localStorage.getItem("erpnext_url") || instances[idx].url,
-    apiKey: localStorage.getItem("erpnext_api_key") || instances[idx].apiKey,
-    apiSecret: localStorage.getItem("erpnext_api_secret") || instances[idx].apiSecret,
-    defaultCompany: localStorage.getItem("erpnext_default_company") || "",
-    defaultEmployee: localStorage.getItem("erpnext_default_employee") || "",
-    baseDir: localStorage.getItem("erpnext_base_dir") || instances[idx].baseDir || "",
-  };
-
-  saveInstances(instances);
-}
-
-export function addInstance(inst: ERPInstance): void {
-  const instances = getInstances();
-  instances.push(inst);
-  saveInstances(instances);
-}
-
-export function removeInstance(id: string): void {
-  let instances = getInstances();
-  instances = instances.filter((i) => i.id !== id);
-  if (instances.length === 0) instances = [DEFAULT_INSTANCE];
-  saveInstances(instances);
-
-  // If we removed the active one, switch to first
-  if (getActiveInstanceId() === id) {
-    activateInstance(instances[0].id);
-  }
-}
-
-export function updateInstance(id: string, updates: Partial<ERPInstance>): void {
-  const instances = getInstances();
-  const idx = instances.findIndex((i) => i.id === id);
-  if (idx === -1) return;
-  instances[idx] = { ...instances[idx], ...updates };
-  saveInstances(instances);
-
-  // If updating the active instance, also update standard keys
-  if (id === getActiveInstanceId()) {
-    activateInstance(id);
-  }
-}
-
-/** Apply instance theme colors to CSS custom properties */
 export function applyTheme(inst?: ERPInstance): void {
-  const theme = inst?.theme || getActiveInstance().theme || THEME_3BM;
+  const theme = inst?.theme || BUILTIN_THEMES[inst?.id || ""] || THEME_3BM;
   const root = document.documentElement;
   root.style.setProperty("--color-3bm-teal", theme.primary);
   root.style.setProperty("--color-3bm-teal-light", theme.primaryLight);
@@ -190,129 +173,44 @@ export function applyTheme(inst?: ERPInstance): void {
   root.style.setProperty("--color-3bm-purple-dark", theme.sidebarDark);
 }
 
-/** Get the built-in theme for an instance (even if localStorage is stale) */
-function getBuiltinTheme(id: string): InstanceTheme | undefined {
-  if (id === "3bm") return THEME_3BM;
-  if (id === "impertio") return THEME_IMPERTIO;
-  if (id === "symitech") return THEME_SYMITECH;
-  if (id === "domera") return THEME_DOMERA;
-  return undefined;
-}
+/* ─── Known defaults per instance ─── */
 
-const THEME_DOMERA: InstanceTheme = {
-  primary: "#8dab9f",       // sage green (Domera huisstijl)
-  primaryLight: "#a3bdb2",
-  primaryDark: "#6f8f80",
-  sidebar: "#332c2f",       // dark brown/charcoal
-  sidebarLight: "#5d424c",  // dusty mauve
-  sidebarDark: "#231e20",
+const KNOWN_DEFAULTS: Record<string, { employee?: string; company?: string; nextcloud_url?: string; webmail_url?: string }> = {
+  "3bm": { employee: "HR-EMP-00003", company: "3BM Bouwtechniek" },
+  impertio: { employee: "HR-EMP-00002" },
+  symitech: {
+    nextcloud_url: "https://symitech-cloud.prilk.cloud",
+    webmail_url: "https://symitech-cloud.prilk.cloud/apps/mail/",
+  },
+  domera: { employee: "HR-EMP-00007" },
 };
 
-const DOMERA_INSTANCE: ERPInstance = {
-  id: "domera",
-  name: "Domera",
-  color: "#8dab9f",
-  url: "https://domera.prilk.cloud",
-  apiKey: "",
-  apiSecret: "",
-  defaultCompany: "",
-  defaultEmployee: "",
-  baseDir: "",
-  theme: THEME_DOMERA,
-};
+/* ─── Init ─── */
 
-const IMPERTIO_INSTANCE: ERPInstance = {
-  id: "impertio",
-  name: "Impertio",
-  color: "#f97316",
-  url: "https://impertire.prilk.cloud",
-  apiKey: "",
-  apiSecret: "",
-  defaultCompany: "",
-  defaultEmployee: "",
-  baseDir: "",
-  theme: THEME_IMPERTIO,
-};
-
-const SYMITECH_INSTANCE: ERPInstance = {
-  id: "symitech",
-  name: "Symitech",
-  color: "#3b82f6",
-  url: "https://symitech.prilk.cloud",
-  apiKey: "",
-  apiSecret: "",
-  defaultCompany: "",
-  defaultEmployee: "",
-  baseDir: "",
-  theme: THEME_SYMITECH,
-};
-
-/** Load credentials from encrypted vault and merge into instances */
-export async function loadFromVault(): Promise<void> {
-  try {
-    const res = await fetch("/api/vault/full");
-    if (!res.ok) return;
-    const { data } = await res.json() as { data: { id: string; name: string; url: string; apiKey: string; apiSecret: string; defaultCompany?: string; defaultEmployee?: string }[] };
-    if (!Array.isArray(data) || data.length === 0) return;
-
-    const instances = getInstances();
-    let changed = false;
-
-    for (const vaultEntry of data) {
-      const idx = instances.findIndex((i) => i.id === vaultEntry.id);
-      if (idx >= 0) {
-        // Merge vault credentials into existing instance (vault is the source of truth for secrets)
-        if (vaultEntry.apiKey && vaultEntry.apiSecret) {
-          instances[idx].url = vaultEntry.url || instances[idx].url;
-          instances[idx].apiKey = vaultEntry.apiKey;
-          instances[idx].apiSecret = vaultEntry.apiSecret;
-          if (vaultEntry.defaultCompany) instances[idx].defaultCompany = vaultEntry.defaultCompany;
-          if (vaultEntry.defaultEmployee) instances[idx].defaultEmployee = vaultEntry.defaultEmployee;
-          changed = true;
-        }
-      }
-    }
-
-    if (changed) {
-      saveInstances(instances);
-      // Re-activate to update localStorage keys
-      activateInstance(getActiveInstanceId());
-    }
-  } catch {
-    // Vault not available (e.g. server not running) — no problem, use localStorage
-  }
-}
-
-// On first load, ensure the instances array exists.
 export function initInstances(): void {
-  const instances = getInstances();
-  let changed = false;
+  // Load from localStorage cache first for instant render
+  getInstances();
 
-  // Inject built-in instances if not present
-  if (!instances.find((i) => i.id === "impertio")) {
-    instances.push(IMPERTIO_INSTANCE);
-    changed = true;
-  }
-  if (!instances.find((i) => i.id === "symitech")) {
-    instances.push(SYMITECH_INSTANCE);
-    changed = true;
-  }
-  if (!instances.find((i) => i.id === "domera")) {
-    instances.push(DOMERA_INSTANCE);
-    changed = true;
-  }
-
-  // Ensure themes are set on instances that match built-in IDs
-  for (const inst of instances) {
-    const builtin = getBuiltinTheme(inst.id);
-    if (builtin && !inst.theme) {
-      inst.theme = builtin;
-      changed = true;
+  // Set known defaults if not already configured
+  for (const [id, defaults] of Object.entries(KNOWN_DEFAULTS)) {
+    if (!localStorage.getItem(`pref_${id}_employee`) && defaults.employee) {
+      localStorage.setItem(`pref_${id}_employee`, defaults.employee);
+    }
+    if (!localStorage.getItem(`pref_${id}_company`) && defaults.company) {
+      localStorage.setItem(`pref_${id}_company`, defaults.company);
+      localStorage.setItem("erpnext_default_company", defaults.company);
+    }
+    if (!localStorage.getItem(`pref_${id}_nextcloud_url`) && defaults.nextcloud_url) {
+      localStorage.setItem(`pref_${id}_nextcloud_url`, defaults.nextcloud_url);
+    }
+    if (!localStorage.getItem(`pref_${id}_webmail_url`) && defaults.webmail_url) {
+      localStorage.setItem(`pref_${id}_webmail_url`, defaults.webmail_url);
     }
   }
 
-  if (changed) saveInstances(instances);
+  // Activate current instance (sets preferences + theme)
+  activateInstance(getActiveInstanceId());
 
-  // Apply theme for active instance
-  applyTheme(getActiveInstance());
+  // Then async-load from backend
+  loadInstancesFromBackend();
 }
