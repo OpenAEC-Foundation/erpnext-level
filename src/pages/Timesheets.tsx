@@ -31,20 +31,6 @@ interface Timesheet {
   company: string | null;
 }
 
-interface TimesheetDetail {
-  name: string;
-  parent: string;
-  activity_type: string;
-  from_time: string;
-  to_time: string;
-  hours: number;
-  project: string;
-  task: string;
-  task_name?: string;
-  description: string;
-  billable?: number;
-}
-
 const statusColors: Record<string, string> = {
   Draft: "bg-slate-100 text-slate-600",
   Submitted: "bg-3bm-teal/10 text-3bm-teal-dark",
@@ -58,6 +44,7 @@ const euro = (v: number) =>
 
 
 export default function Timesheets() {
+  const allEmployees = useEmployees();
   const [timesheets, setTimesheets] = useState<Timesheet[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -98,13 +85,20 @@ export default function Timesheets() {
     loadData();
   }, [fromDate, toDate]);
 
-  // Filter by company (include null company when filter is set)
+  // Filter by company via employee's company (timesheets often have empty company)
+  const employeeIdSet = useMemo(() => {
+    if (!company) return null;
+    const set = new Set<string>();
+    for (const emp of allEmployees) {
+      if (emp.company === company) set.add(emp.name);
+    }
+    return set;
+  }, [allEmployees, company]);
+
   const companyFiltered = useMemo(() => {
-    if (!company) return timesheets;
-    return timesheets.filter(
-      (t) => t.company === company || t.company === null || t.company === ""
-    );
-  }, [timesheets, company]);
+    if (!employeeIdSet) return timesheets;
+    return timesheets.filter((t) => employeeIdSet.has(t.employee));
+  }, [timesheets, employeeIdSet]);
 
   // Get unique employees from company-filtered data
   const employees = useMemo(() => {
@@ -550,6 +544,15 @@ export function TimesheetDetailsTable({
     );
   }
 
+  // Build a map from project ID to project_name for display
+  const projectNameMap = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const p of projects) {
+      if (p.project_name) map.set(p.name, p.project_name);
+    }
+    return map;
+  }, [projects]);
+
   function renderRow(d: TSDetail) {
     const hl = highlights.get(d.name) || {};
     return (
@@ -557,8 +560,7 @@ export function TimesheetDetailsTable({
         <td className={`px-3 py-1.5 ${hl.from_time || ""}`}>{getDayLabel(d.from_time)}</td>
         <td className={`px-3 py-1.5 ${hl.from_time || ""}`}>{formatTimeRange(d.from_time, d.hours)}</td>
         <td className={`px-3 py-1.5 text-right ${hl.hours || ""}`}>{d.hours.toLocaleString("nl-NL", { maximumFractionDigits: 1 })}</td>
-        <td className={`px-3 py-1.5 ${hl.project || ""}`}>{d.project || "-"}</td>
-        <td className={`px-3 py-1.5 ${hl.activity_type || ""}`}>{d.activity_type || "-"}</td>
+        <td className={`px-3 py-1.5 ${hl.project || ""}`}>{projectNameMap.get(d.project) || d.project || "-"}</td>
         {renderEditableCell(d, "task", d.task_name || d.task || "-", `px-3 py-1.5 ${hl.task || ""}`)}
         {renderEditableCell(d, "description", d.description || "-", "px-3 py-1.5 text-slate-500 max-w-[200px] truncate")}
         <td className="px-3 py-1.5 text-center">
@@ -595,7 +597,6 @@ export function TimesheetDetailsTable({
             <th className="text-left px-3 py-2 text-xs font-semibold text-slate-600">Tijd</th>
             <th className="text-right px-3 py-2 text-xs font-semibold text-slate-600">Uren</th>
             <th className={headerClass("project")} onClick={() => toggleGroupBy("project")}>Project</th>
-            <th className={headerClass("activiteit")} onClick={() => toggleGroupBy("activiteit")}>Activiteit</th>
             <th className={headerClass("taak")} onClick={() => toggleGroupBy("taak")}>Taak</th>
             <th className="text-left px-3 py-2 text-xs font-semibold text-slate-600">Omschrijving</th>
             <th className="text-center px-3 py-2 text-xs font-semibold text-slate-600">Facturabel</th>
@@ -609,6 +610,9 @@ export function TimesheetDetailsTable({
               if (groupBy === "dag" && groupKey) {
                 const dt = new Date(groupKey + "T00:00:00");
                 groupLabel = `${DAY_LABELS[dt.getDay()]} ${dt.toLocaleDateString("nl-NL", { day: "numeric", month: "short" })}`;
+              } else if (groupBy === "project" && groupKey && groupKey !== "(geen project)") {
+                const pName = projectNameMap.get(groupKey);
+                if (pName) groupLabel = `${groupKey} — ${pName}`;
               }
               return (
                 <Fragment key={groupKey}>
@@ -617,7 +621,7 @@ export function TimesheetDetailsTable({
                     <td className="px-3 py-1.5 text-xs font-semibold text-slate-700 text-right">
                       {groupTotal.toLocaleString("nl-NL", { maximumFractionDigits: 1 })}
                     </td>
-                    <td colSpan={5} />
+                    <td colSpan={4} />
                   </tr>
                   {items.map(renderRow)}
                 </Fragment>
@@ -633,7 +637,7 @@ export function TimesheetDetailsTable({
             <td className="px-3 py-1.5 text-xs font-semibold text-slate-700 text-right">
               {details.reduce((s, d) => s + d.hours, 0).toLocaleString("nl-NL", { maximumFractionDigits: 1 })}
             </td>
-            <td colSpan={5} />
+            <td colSpan={4} />
           </tr>
         </tfoot>
       </table>
@@ -849,15 +853,10 @@ function TimesheetGoedkeuren() {
     if (tsDetails.has(tsName)) return;
     setDetailsLoading(tsName);
     try {
-      const details = await fetchList<TSDetail>("Timesheet Detail", {
-        fields: ["name", "parent", "activity_type", "from_time", "hours", "project", "task", "task_name", "description", "billable"],
-        filters: [
-          ["parent", "=", tsName],
-          ["parenttype", "=", "Timesheet"],
-        ],
-        limit_page_length: 0,
-        order_by: "from_time asc",
-      });
+      const doc = await fetchDocument<{ time_logs: TSDetail[] }>("Timesheet", tsName);
+      const details = (doc.time_logs || []).sort((a, b) =>
+        (a.from_time || "").localeCompare(b.from_time || "")
+      );
       setTsDetails((prev) => new Map(prev).set(tsName, details));
     } catch {
       // ignore
@@ -881,15 +880,10 @@ function TimesheetGoedkeuren() {
     if (!details) {
       setDetailsLoading(ts.name);
       try {
-        details = await fetchList<TSDetail>("Timesheet Detail", {
-          fields: ["name", "parent", "activity_type", "from_time", "hours", "project", "task", "task_name", "description", "billable"],
-          filters: [
-            ["parent", "=", ts.name],
-            ["parenttype", "=", "Timesheet"],
-          ],
-          limit_page_length: 0,
-          order_by: "from_time asc",
-        });
+        const doc = await fetchDocument<{ time_logs: TSDetail[] }>("Timesheet", ts.name);
+        details = (doc.time_logs || []).sort((a, b) =>
+          (a.from_time || "").localeCompare(b.from_time || "")
+        );
         setTsDetails((prev) => new Map(prev).set(ts.name, details!));
       } catch {
         details = [];

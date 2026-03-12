@@ -1,8 +1,8 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import {
-  MessageSquare, Send, Search, Users, Settings, X, Cloud,
+  MessageSquare, Send, Search, Users, Cloud,
   Bot, Phone, Shield, Loader2, AlertCircle, Paperclip, Smile,
-  ChevronLeft, CheckCheck,
+  ChevronLeft, CheckCheck, Video, Layers,
 } from "lucide-react";
 import { getActiveInstanceId } from "../lib/instances";
 
@@ -40,12 +40,14 @@ interface PlatformConfig {
   icon: typeof MessageSquare;
 }
 
-type Platform = "nextcloud-talk" | "telegram" | "whatsapp" | "signal";
+type Platform = "all" | "nextcloud-talk" | "ms-teams" | "telegram" | "whatsapp" | "signal";
 
 /* ─── Platform metadata ─── */
 
 const PLATFORMS: Record<Platform, PlatformConfig> = {
+  all: { configured: true, label: "Alle", color: "text-slate-300", bgColor: "bg-slate-600", icon: Layers },
   "nextcloud-talk": { configured: false, label: "NextCloud Talk", color: "text-blue-500", bgColor: "bg-blue-500", icon: Cloud },
+  "ms-teams": { configured: false, label: "MS Teams", color: "text-violet-500", bgColor: "bg-violet-500", icon: Video },
   telegram: { configured: false, label: "Telegram", color: "text-sky-500", bgColor: "bg-sky-500", icon: Bot },
   whatsapp: { configured: false, label: "WhatsApp", color: "text-green-500", bgColor: "bg-green-500", icon: Phone },
   signal: { configured: false, label: "Signal", color: "text-indigo-500", bgColor: "bg-indigo-500", icon: Shield },
@@ -71,6 +73,11 @@ interface BackendServices {
   whatsapp?: { enabled: boolean } | null;
 }
 
+function getTeamsEmail(): string {
+  // Use the mail user from vault or localStorage as the Teams identity
+  return getPref("ms-teams_email") || localStorage.getItem(`pref_${getInstanceId()}_mail_user`) || "";
+}
+
 function buildQuery(platform: Platform, extra: Record<string, string> = {}, backend: BackendServices = {}): string {
   const params = new URLSearchParams({ platform, ...extra });
 
@@ -85,6 +92,9 @@ function buildQuery(platform: Platform, extra: Record<string, string> = {}, back
   } else if (platform === "telegram") {
     const token = backend.telegram?.token || getPref("telegram_token");
     if (token) params.set("token", token);
+  } else if (platform === "ms-teams") {
+    params.set("instance", getInstanceId());
+    params.set("email", getTeamsEmail());
   }
 
   return params.toString();
@@ -99,6 +109,8 @@ function isPlatformConfigured(platform: Platform, backend: BackendServices = {})
     const pass = getPref("nextcloud-talk_pass") || localStorage.getItem(`pref_${id}_nextcloud_pass`) || "";
     return !!(url && user && pass);
   }
+  if (platform === "ms-teams") return !!getTeamsEmail();
+  if (platform === "all") return true;
   if (platform === "telegram") return !!(backend.telegram?.token || getPref("telegram_token"));
   if (platform === "whatsapp") return !!backend.whatsapp?.enabled;
   return false;
@@ -160,7 +172,7 @@ function avatarColor(name: string): string {
 /* ─── Component ─── */
 
 export default function Messenger() {
-  const [activePlatform, setActivePlatform] = useState<Platform>("nextcloud-talk");
+  const [activePlatform, setActivePlatform] = useState<Platform>("all");
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [selectedConvo, setSelectedConvo] = useState<Conversation | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
@@ -170,8 +182,6 @@ export default function Messenger() {
   const [loadingMessages, setLoadingMessages] = useState(false);
   const [sending, setSending] = useState(false);
   const [error, setError] = useState("");
-  const [showConfig, setShowConfig] = useState(false);
-  const [configPlatform, setConfigPlatform] = useState<Platform>("nextcloud-talk");
   const [mobileShowChat, setMobileShowChat] = useState(false);
 
   // Backend service credentials (from vault)
@@ -199,22 +209,6 @@ export default function Messenger() {
   const convoPollerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const msgPollerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  /* ─── Config form state ─── */
-  const [cfgNcUrl, setCfgNcUrl] = useState("");
-  const [cfgNcUser, setCfgNcUser] = useState("");
-  const [cfgNcPass, setCfgNcPass] = useState("");
-  const [cfgTgToken, setCfgTgToken] = useState("");
-
-  // Load config from localStorage when opening config modal
-  useEffect(() => {
-    if (!showConfig) return;
-    const id = getInstanceId();
-    setCfgNcUrl(backendServices.nextcloud?.url || getPref("nextcloud-talk_url") || localStorage.getItem(`pref_${id}_nextcloud_url`) || "");
-    setCfgNcUser(backendServices.nextcloud?.user || getPref("nextcloud-talk_user") || localStorage.getItem(`pref_${id}_nextcloud_user`) || "");
-    setCfgNcPass(backendServices.nextcloud?.pass || getPref("nextcloud-talk_pass") || localStorage.getItem(`pref_${id}_nextcloud_pass`) || "");
-    setCfgTgToken(backendServices.telegram?.token || getPref("telegram_token"));
-  }, [showConfig]);
-
   /* ─── Scroll to bottom ─── */
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -226,12 +220,34 @@ export default function Messenger() {
     if (!silent) setLoading(true);
     setError("");
     try {
-      const qs = buildQuery(activePlatform, {}, backendServices);
-      const resp = await fetch(`${API}/api/messenger/conversations?${qs}`);
+      let resp: globalThis.Response;
+      if (activePlatform === "all") {
+        // Load from all configured platforms via dedicated endpoint
+        const id = getInstanceId();
+        const params = new URLSearchParams();
+        const ncUrl = backendServices.nextcloud?.url || getPref("nextcloud-talk_url") || localStorage.getItem(`pref_${id}_nextcloud_url`) || "";
+        const ncUser = backendServices.nextcloud?.user || getPref("nextcloud-talk_user") || localStorage.getItem(`pref_${id}_nextcloud_user`) || "";
+        const ncPass = backendServices.nextcloud?.pass || getPref("nextcloud-talk_pass") || localStorage.getItem(`pref_${id}_nextcloud_pass`) || "";
+        if (ncUrl && ncUser && ncPass) {
+          params.set("nc_url", ncUrl);
+          params.set("nc_user", ncUser);
+          params.set("nc_pass", ncPass);
+        }
+        const tgToken = backendServices.telegram?.token || getPref("telegram_token");
+        if (tgToken) params.set("tg_token", tgToken);
+        const teamsEmail = getTeamsEmail();
+        if (teamsEmail) {
+          params.set("instance", id);
+          params.set("email", teamsEmail);
+        }
+        resp = await fetch(`${API}/api/messenger/all-conversations?${params.toString()}`);
+      } else {
+        const qs = buildQuery(activePlatform, {}, backendServices);
+        resp = await fetch(`${API}/api/messenger/conversations?${qs}`);
+      }
       const json = await resp.json();
       if (!resp.ok) throw new Error(json.error || "Fout bij laden gesprekken");
       if (json.config && !json.data?.length) {
-        // Platform not configured / placeholder
         setConversations([]);
       } else {
         setConversations(json.data || []);
@@ -285,6 +301,7 @@ export default function Messenger() {
               ? { url: ncUrl, user: ncUser, pass: ncPass }
               : {}),
             ...(convo.platform === "telegram" ? { token: tgToken } : {}),
+            ...(convo.platform === "ms-teams" ? { instance: getInstanceId(), email: getTeamsEmail() } : {}),
           }),
         }).catch(() => {});
       }
@@ -323,6 +340,9 @@ export default function Messenger() {
         body.pass = backendServices.nextcloud?.pass || getPref("nextcloud-talk_pass") || localStorage.getItem(`pref_${id}_nextcloud_pass`) || "";
       } else if (selectedConvo.platform === "telegram") {
         body.token = backendServices.telegram?.token || getPref("telegram_token");
+      } else if (selectedConvo.platform === "ms-teams") {
+        body.instance = getInstanceId();
+        body.email = getTeamsEmail();
       }
 
       const resp = await fetch(`${API}/api/messenger/send`, {
@@ -342,17 +362,6 @@ export default function Messenger() {
     } finally {
       setSending(false);
     }
-  }
-
-  /* ─── Save config ─── */
-  function handleSaveConfig() {
-    setPref("nextcloud-talk_url", cfgNcUrl.replace(/\/+$/, ""));
-    setPref("nextcloud-talk_user", cfgNcUser);
-    setPref("nextcloud-talk_pass", cfgNcPass);
-    setPref("telegram_token", cfgTgToken);
-    setShowConfig(false);
-    // Reload conversations with new config
-    setTimeout(() => loadConversations(), 100);
   }
 
   /* ─── Select conversation ─── */
@@ -406,13 +415,6 @@ export default function Messenger() {
         <div className="p-3 border-b border-slate-200 bg-slate-800">
           <div className="flex items-center justify-between mb-3">
             <h1 className="text-lg font-bold text-white">Berichten</h1>
-            <button
-              onClick={() => { setConfigPlatform(activePlatform); setShowConfig(true); }}
-              className="p-1.5 text-slate-400 hover:text-white rounded-lg hover:bg-slate-700 transition-colors cursor-pointer"
-              title="Instellingen"
-            >
-              <Settings size={18} />
-            </button>
           </div>
           <div className="flex gap-1">
             {(Object.entries(PLATFORMS) as [Platform, PlatformConfig][]).map(([key, p]) => {
@@ -462,21 +464,16 @@ export default function Messenger() {
           {!configured && (
             <div className="p-6 text-center space-y-3">
               <div className="p-3 bg-slate-100 rounded-xl inline-block">
-                <Settings size={32} className="text-slate-400" />
+                <AlertCircle size={32} className="text-slate-400" />
               </div>
               <p className="text-sm text-slate-500">
                 {activePlatform === "whatsapp" || activePlatform === "signal"
                   ? `${PLATFORMS[activePlatform].label} is nog niet beschikbaar.`
+                  : activePlatform === "ms-teams"
+                  ? "MS Teams vereist Chat.Read scope in de Connected App. Configureer dit in ERPNext."
                   : `Configureer ${PLATFORMS[activePlatform].label} om te beginnen.`}
               </p>
-              {(activePlatform === "nextcloud-talk" || activePlatform === "telegram") && (
-                <button
-                  onClick={() => { setConfigPlatform(activePlatform); setShowConfig(true); }}
-                  className="px-4 py-2 bg-blue-500 text-white text-sm rounded-lg hover:bg-blue-600 transition-colors cursor-pointer"
-                >
-                  Configureren
-                </button>
-              )}
+              <p className="text-xs text-slate-400 mt-1">Ga naar Instellingen om credentials te configureren.</p>
             </div>
           )}
 
@@ -607,28 +604,28 @@ export default function Messenger() {
                   {group.messages.map((msg) => (
                     <div
                       key={msg.id}
-                      className={`flex mb-2 ${msg.isOwn ? "justify-end" : "justify-start"}`}
+                      className={`flex mb-3 ${msg.isOwn ? "justify-end" : "justify-start"}`}
                     >
                       {!msg.isOwn && (
                         <div className={`w-8 h-8 rounded-full flex items-center justify-center text-white text-[10px] font-semibold mr-2 mt-1 flex-shrink-0 ${avatarColor(msg.senderDisplayName)}`}>
                           {getInitials(msg.senderDisplayName)}
                         </div>
                       )}
-                      <div className={`max-w-[70%] ${msg.isOwn ? "order-1" : ""}`}>
+                      <div className={`max-w-[70%]`}>
                         {!msg.isOwn && (
                           <span className="text-[10px] text-slate-500 font-medium ml-1 mb-0.5 block">
                             {msg.senderDisplayName}
                           </span>
                         )}
                         <div
-                          className={`px-3 py-2 rounded-2xl text-sm leading-relaxed ${
+                          className={`px-3.5 py-2 text-sm leading-relaxed shadow-sm ${
                             msg.isOwn
-                              ? "bg-blue-500 text-white rounded-br-md"
-                              : "bg-white text-slate-800 rounded-bl-md shadow-sm"
+                              ? "bg-emerald-500 text-white rounded-2xl rounded-br-sm ml-12"
+                              : "bg-white text-slate-800 rounded-2xl rounded-bl-sm"
                           }`}
                         >
                           <p className="whitespace-pre-wrap break-words">{msg.text}</p>
-                          <div className={`flex items-center justify-end gap-1 mt-1 ${msg.isOwn ? "text-blue-100" : "text-slate-400"}`}>
+                          <div className={`flex items-center justify-end gap-1 mt-1 ${msg.isOwn ? "text-emerald-100" : "text-slate-400"}`}>
                             <span className="text-[10px]">{formatMessageTime(msg.timestamp)}</span>
                             {msg.isOwn && <CheckCheck size={12} />}
                           </div>
@@ -674,152 +671,6 @@ export default function Messenger() {
         )}
       </div>
 
-      {/* ─── Config Modal ─── */}
-      {showConfig && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={() => setShowConfig(false)}>
-          <div className="bg-white rounded-xl shadow-2xl w-full max-w-lg mx-4 max-h-[80vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
-            {/* Header */}
-            <div className="px-6 py-4 border-b border-slate-200 flex items-center justify-between">
-              <h2 className="text-lg font-bold text-slate-800">Berichtenplatforms configureren</h2>
-              <button onClick={() => setShowConfig(false)} className="p-1 text-slate-400 hover:text-slate-600 cursor-pointer">
-                <X size={20} />
-              </button>
-            </div>
-
-            {/* Platform tabs */}
-            <div className="px-6 pt-4 flex gap-2">
-              {(Object.entries(PLATFORMS) as [Platform, PlatformConfig][]).map(([key, p]) => {
-                const Icon = p.icon;
-                return (
-                  <button
-                    key={key}
-                    onClick={() => setConfigPlatform(key)}
-                    className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors cursor-pointer ${
-                      configPlatform === key ? "bg-slate-800 text-white" : "bg-slate-100 text-slate-600 hover:bg-slate-200"
-                    }`}
-                  >
-                    <Icon size={14} />
-                    {p.label}
-                  </button>
-                );
-              })}
-            </div>
-
-            {/* Config form */}
-            <div className="p-6 space-y-4">
-              {configPlatform === "nextcloud-talk" && (
-                <>
-                  <div>
-                    <label className="block text-sm font-medium text-slate-700 mb-1">NextCloud URL</label>
-                    <input
-                      type="url"
-                      value={cfgNcUrl}
-                      onChange={(e) => setCfgNcUrl(e.target.value)}
-                      placeholder="https://cloud.example.com"
-                      className="w-full px-4 py-2.5 border border-slate-200 rounded-lg text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium text-slate-700 mb-1">Gebruikersnaam</label>
-                    <input
-                      type="text"
-                      value={cfgNcUser}
-                      onChange={(e) => setCfgNcUser(e.target.value)}
-                      placeholder="admin"
-                      className="w-full px-4 py-2.5 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium text-slate-700 mb-1">Wachtwoord</label>
-                    <input
-                      type="password"
-                      value={cfgNcPass}
-                      onChange={(e) => setCfgNcPass(e.target.value)}
-                      placeholder="••••••••"
-                      className="w-full px-4 py-2.5 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                    />
-                    <p className="text-xs text-slate-400 mt-1">Gebruik een app-wachtwoord voor betere beveiliging.</p>
-                  </div>
-                </>
-              )}
-
-              {configPlatform === "telegram" && (
-                <div>
-                  <label className="block text-sm font-medium text-slate-700 mb-1">Bot Token</label>
-                  <input
-                    type="password"
-                    value={cfgTgToken}
-                    onChange={(e) => setCfgTgToken(e.target.value)}
-                    placeholder="123456789:ABCdefGHIjklMNOpqrsTUVwxyz"
-                    className="w-full px-4 py-2.5 border border-slate-200 rounded-lg text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500"
-                  />
-                  <p className="text-xs text-slate-400 mt-1">
-                    Maak een bot aan via @BotFather in Telegram en plak het token hier.
-                  </p>
-                </div>
-              )}
-
-              {configPlatform === "whatsapp" && (
-                <div className="space-y-3">
-                  <div className="p-4 bg-amber-50 border border-amber-200 rounded-lg">
-                    <p className="text-sm font-medium text-amber-800 mb-2">Binnenkort beschikbaar</p>
-                    <p className="text-xs text-amber-700">
-                      WhatsApp Business API vereist een apart account en goedkeuring van Meta.
-                    </p>
-                  </div>
-                  <div className="space-y-2 text-xs text-slate-600">
-                    <p className="font-medium text-slate-700">Vereiste stappen:</p>
-                    <ol className="list-decimal ml-4 space-y-1">
-                      <li>Maak een Meta Business Account aan op business.facebook.com</li>
-                      <li>Registreer een WhatsApp Business API nummer</li>
-                      <li>Verkrijg een permanent access token via de Meta Developer Console</li>
-                      <li>Configureer een webhook URL voor inkomende berichten</li>
-                    </ol>
-                  </div>
-                </div>
-              )}
-
-              {configPlatform === "signal" && (
-                <div className="space-y-3">
-                  <div className="p-4 bg-indigo-50 border border-indigo-200 rounded-lg">
-                    <p className="text-sm font-medium text-indigo-800 mb-2">Binnenkort beschikbaar</p>
-                    <p className="text-xs text-indigo-700">
-                      Signal vereist signal-cli of signal-cli-rest-api als backend.
-                    </p>
-                  </div>
-                  <div className="space-y-2 text-xs text-slate-600">
-                    <p className="font-medium text-slate-700">Vereiste stappen:</p>
-                    <ol className="list-decimal ml-4 space-y-1">
-                      <li>Installeer signal-cli (github.com/AsamK/signal-cli)</li>
-                      <li>Of gebruik signal-cli-rest-api via Docker</li>
-                      <li>Registreer je telefoonnummer met signal-cli</li>
-                      <li>Configureer de API URL</li>
-                    </ol>
-                  </div>
-                </div>
-              )}
-            </div>
-
-            {/* Footer */}
-            <div className="px-6 py-4 border-t border-slate-200 flex justify-end gap-2">
-              <button
-                onClick={() => setShowConfig(false)}
-                className="px-4 py-2 text-sm text-slate-600 hover:bg-slate-100 rounded-lg transition-colors cursor-pointer"
-              >
-                Annuleren
-              </button>
-              {(configPlatform === "nextcloud-talk" || configPlatform === "telegram") && (
-                <button
-                  onClick={handleSaveConfig}
-                  className="px-4 py-2 bg-blue-500 text-white text-sm rounded-lg hover:bg-blue-600 transition-colors cursor-pointer"
-                >
-                  Opslaan
-                </button>
-              )}
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }

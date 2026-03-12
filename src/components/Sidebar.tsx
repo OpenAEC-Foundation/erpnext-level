@@ -4,7 +4,7 @@ import {
   FileBarChart, ClipboardCheck, Users, CalendarDays, Search,
   TrendingUp, Clock, PieChart, BookOpen, Receipt, Truck, Timer,
   FileSpreadsheet, Wallet, CalendarCheck, Settings, BarChart3,
-  ListTodo, LayoutDashboard, UserCheck, Cloud, MessageCircle, ListTree,
+  ListTodo, LayoutDashboard, UserCheck, Cloud, ListTree,
   Calendar, ChevronDown, ChevronRight, Landmark, BookMarked, Shield, MessageSquare,
 } from "lucide-react";
 import { getActiveInstance } from "../lib/instances";
@@ -105,7 +105,7 @@ const sections: NavSection[] = [
     collapsible: true,
     items: [
       { id: "employees", label: "Medewerkers", icon: Users },
-      { id: "vakantieplanning", label: "Vakantieplanning", icon: CalendarCheck },
+      { id: "vakantieplanning", label: "Vakantie & Overuren", icon: CalendarCheck },
       { id: "onkosten", label: "Onkostenvergoedingen", icon: Receipt },
     ],
   },

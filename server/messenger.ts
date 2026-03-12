@@ -1,10 +1,11 @@
 /**
  * Messenger — Multi-platform messaging proxy
- * Supports: NextCloud Talk, Telegram, WhatsApp (placeholder), Signal (placeholder)
+ * Supports: NextCloud Talk, MS Teams (Graph API), Telegram, WhatsApp (placeholder), Signal (placeholder)
  * Credentials passed per request from client localStorage via query/body params.
  */
 
 import type { Request, Response } from "express";
+import { mailAutoConfigInternal } from "./mail.js";
 
 /* ─── Types ─── */
 
@@ -97,7 +98,7 @@ async function ncGetMessages(ncUrl: string, user: string, pass: string, token: s
       sender: m.actorId || "",
       senderDisplayName: m.actorDisplayName || m.actorId || "",
       timestamp: m.timestamp ? new Date(m.timestamp * 1000).toISOString() : "",
-      isOwn: m.actorId === user,
+      isOwn: m.actorType === "users" && (m.actorId === user || m.actorId?.toLowerCase() === user.toLowerCase()),
       platform: "nextcloud-talk",
     }))
     .reverse(); // OCS returns newest first; we want oldest first
@@ -204,6 +205,110 @@ async function tgSendMessage(botToken: string, chatId: string, text: string) {
   return tgRequest(botToken, "sendMessage", { chat_id: chatId, text });
 }
 
+/* ─── MS Teams (Microsoft Graph) helpers ─── */
+
+async function getGraphToken(instanceId: string, email: string): Promise<string | null> {
+  const config = await mailAutoConfigInternal(instanceId, email);
+  if (!config?.refreshToken || !config?.clientId || !config?.clientSecret || !config?.tokenUri) return null;
+
+  const tokenResp = await fetch(config.tokenUri, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      client_id: config.clientId,
+      client_secret: config.clientSecret,
+      refresh_token: config.refreshToken,
+      grant_type: "refresh_token",
+      scope: "https://graph.microsoft.com/.default offline_access",
+    }),
+  });
+  const data = await tokenResp.json() as { access_token?: string };
+  return data.access_token || null;
+}
+
+async function graphRequest(token: string, path: string, method = "GET", body?: string): Promise<any> {
+  const opts: RequestInit = {
+    method,
+    headers: {
+      Authorization: `Bearer ${token}`,
+      Accept: "application/json",
+      ...(body ? { "Content-Type": "application/json" } : {}),
+    },
+    signal: AbortSignal.timeout(15000),
+  };
+  if (body) opts.body = body;
+  const resp = await fetch(`https://graph.microsoft.com/v1.0${path}`, opts);
+  if (!resp.ok) {
+    const errText = await resp.text();
+    throw new Error(`Graph API ${resp.status}: ${errText.slice(0, 200)}`);
+  }
+  return resp.json();
+}
+
+async function teamsListConversations(instanceId: string, email: string): Promise<Conversation[]> {
+  const token = await getGraphToken(instanceId, email);
+  if (!token) throw new Error("Geen OAuth2 token beschikbaar voor MS Teams");
+
+  // Get chats (1:1 and group chats)
+  const data = await graphRequest(token, "/me/chats?$expand=members&$top=50&$orderby=lastMessagePreview/createdDateTime desc");
+  const chats = data.value || [];
+
+  return chats.map((c: any) => {
+    const members = c.members || [];
+    // For 1:1 chats, use the other person's name
+    let name = c.topic || "";
+    if (!name && c.chatType === "oneOnOne") {
+      const other = members.find((m: any) => m.email?.toLowerCase() !== email.toLowerCase());
+      name = other?.displayName || "Chat";
+    }
+    if (!name) name = members.map((m: any) => m.displayName).filter(Boolean).join(", ") || "Chat";
+
+    return {
+      id: c.id,
+      name,
+      lastMessage: c.lastMessagePreview?.body?.content?.replace(/<[^>]*>/g, "").slice(0, 100) || "",
+      lastMessageTime: c.lastMessagePreview?.createdDateTime || "",
+      unreadCount: 0,
+      participants: members.length,
+      type: c.chatType === "oneOnOne" ? "one-to-one" : "group",
+      platform: "ms-teams",
+    };
+  });
+}
+
+async function teamsGetMessages(instanceId: string, email: string, chatId: string): Promise<Message[]> {
+  const token = await getGraphToken(instanceId, email);
+  if (!token) throw new Error("Geen OAuth2 token beschikbaar voor MS Teams");
+
+  const data = await graphRequest(token, `/me/chats/${encodeURIComponent(chatId)}/messages?$top=50&$orderby=createdDateTime desc`);
+  const msgs = (data.value || []).reverse(); // oldest first
+
+  return msgs
+    .filter((m: any) => m.messageType === "message")
+    .map((m: any) => ({
+      id: m.id,
+      text: m.body?.content?.replace(/<[^>]*>/g, "") || "",
+      sender: m.from?.user?.id || "",
+      senderDisplayName: m.from?.user?.displayName || "Onbekend",
+      timestamp: m.createdDateTime || "",
+      isOwn: m.from?.user?.email?.toLowerCase() === email.toLowerCase()
+        || m.from?.user?.displayName?.toLowerCase().includes(email.split("@")[0].toLowerCase()),
+      platform: "ms-teams",
+    }));
+}
+
+async function teamsSendMessage(instanceId: string, email: string, chatId: string, message: string) {
+  const token = await getGraphToken(instanceId, email);
+  if (!token) throw new Error("Geen OAuth2 token beschikbaar voor MS Teams");
+
+  return graphRequest(
+    token,
+    `/me/chats/${encodeURIComponent(chatId)}/messages`,
+    "POST",
+    JSON.stringify({ body: { content: message } })
+  );
+}
+
 /* ─── Placeholder platforms ─── */
 
 function whatsappPlaceholder() {
@@ -265,6 +370,15 @@ export async function messengerListConversations(req: Request, res: Response) {
         const conversations = await tgListConversations(botToken);
         return res.json({ data: conversations });
       }
+      case "ms-teams": {
+        const instanceId = req.query.instance as string;
+        const email = req.query.email as string;
+        if (!instanceId || !email) {
+          return res.status(400).json({ error: "Missende parameters: instance, email" });
+        }
+        const conversations = await teamsListConversations(instanceId, email);
+        return res.json({ data: conversations });
+      }
       case "whatsapp":
         return res.json({ data: [], config: whatsappPlaceholder() });
       case "signal":
@@ -303,6 +417,15 @@ export async function messengerGetMessages(req: Request, res: Response) {
           return res.status(400).json({ error: "Missende parameter: token" });
         }
         const messages = await tgGetMessages(botToken, conversationId);
+        return res.json({ data: messages });
+      }
+      case "ms-teams": {
+        const instanceId = req.query.instance as string;
+        const email = req.query.email as string;
+        if (!instanceId || !email) {
+          return res.status(400).json({ error: "Missende parameters: instance, email" });
+        }
+        const messages = await teamsGetMessages(instanceId, email, conversationId);
         return res.json({ data: messages });
       }
       case "whatsapp":
@@ -346,6 +469,15 @@ export async function messengerSendMessage(req: Request, res: Response) {
         const result = await tgSendMessage(botToken, conversationId, message);
         return res.json({ ok: true, data: result });
       }
+      case "ms-teams": {
+        const instanceId = req.body.instance || req.query.instance;
+        const email = req.body.email || req.query.email;
+        if (!instanceId || !email) {
+          return res.status(400).json({ error: "Missende parameters: instance, email" });
+        }
+        await teamsSendMessage(instanceId, email, conversationId, message);
+        return res.json({ ok: true });
+      }
       case "whatsapp":
         return res.json({ ok: false, config: whatsappPlaceholder() });
       case "signal":
@@ -356,6 +488,56 @@ export async function messengerSendMessage(req: Request, res: Response) {
   } catch (err) {
     return res.status(502).json({ error: (err as Error).message });
   }
+}
+
+/** Load conversations from ALL configured platforms in parallel */
+export async function messengerAllConversations(req: Request, res: Response) {
+  const ncUrl = (req.query.nc_url as string || "").replace(/\/+$/, "");
+  const ncUser = req.query.nc_user as string;
+  const ncPass = req.query.nc_pass as string;
+  const tgToken = req.query.tg_token as string;
+  const instanceId = req.query.instance as string;
+  const email = req.query.email as string;
+
+  const results: Conversation[] = [];
+  const errors: string[] = [];
+
+  const tasks: Promise<void>[] = [];
+
+  if (ncUrl && ncUser && ncPass) {
+    tasks.push(
+      ncListConversations(ncUrl, ncUser, ncPass)
+        .then(convos => results.push(...convos))
+        .catch(err => errors.push(`NextCloud: ${err.message}`))
+    );
+  }
+
+  if (tgToken) {
+    tasks.push(
+      tgListConversations(tgToken)
+        .then(convos => results.push(...convos))
+        .catch(err => errors.push(`Telegram: ${err.message}`))
+    );
+  }
+
+  if (instanceId && email) {
+    tasks.push(
+      teamsListConversations(instanceId, email)
+        .then(convos => results.push(...convos))
+        .catch(err => errors.push(`MS Teams: ${err.message}`))
+    );
+  }
+
+  await Promise.all(tasks);
+
+  // Sort all conversations by last message time (newest first)
+  results.sort((a, b) => {
+    const ta = a.lastMessageTime ? new Date(a.lastMessageTime).getTime() : 0;
+    const tb = b.lastMessageTime ? new Date(b.lastMessageTime).getTime() : 0;
+    return tb - ta;
+  });
+
+  res.json({ data: results, errors: errors.length ? errors : undefined });
 }
 
 export async function messengerMarkRead(req: Request, res: Response) {
@@ -381,6 +563,9 @@ export async function messengerMarkRead(req: Request, res: Response) {
       case "telegram":
         // Telegram Bot API doesn't have a "mark as read" concept
         return res.json({ ok: true, note: "Telegram bots markeren niet als gelezen" });
+      case "ms-teams":
+        // Graph API doesn't have a simple mark-read for chats
+        return res.json({ ok: true });
       case "whatsapp":
         return res.json({ ok: false, config: whatsappPlaceholder() });
       case "signal":

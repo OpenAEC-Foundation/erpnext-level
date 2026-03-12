@@ -35,7 +35,8 @@ import { readPasswords, upsertPasswordEntry, removePasswordEntry, importPassword
 import { handleTerminalConnection } from "./terminal.js";
 import { mailTestConnection, mailListFolders, mailListMessages, mailGetMessage, mailGetAttachment, mailSend, mailDeleteMessage, mailMoveMessage, mailCreateFolder, mailWarmup, mailCacheStats, mailMarkUnread, mailRenameFolder, mailAutoConfig } from "./mail.js";
 import { nextcloudListFiles, nextcloudDownloadUrl, nextcloudDownload, nextcloudUpload } from "./nextcloud.js";
-import { messengerListConversations, messengerGetMessages, messengerSendMessage, messengerMarkRead } from "./messenger.js";
+import { healthGetReport, healthRunTests, healthGetMail, healthGetMessenger, runAllTests } from "./health.js";
+import { messengerListConversations, messengerGetMessages, messengerSendMessage, messengerMarkRead, messengerAllConversations } from "./messenger.js";
 
 const PORT = parseInt(process.env.PORT || "3001", 10);
 
@@ -464,6 +465,13 @@ app.post("/api/passwords/import", (req, res) => {
 
 /* ─── Mail (IMAP) ─── */
 
+/* ─── Health checks ─── */
+
+app.get("/api/health", healthGetReport);
+app.get("/api/health/run", healthRunTests);
+app.get("/api/health/mail", healthGetMail);
+app.get("/api/health/messenger", healthGetMessenger);
+
 app.get("/api/mail/test", mailTestConnection);
 app.get("/api/mail/folders", mailListFolders);
 app.get("/api/mail/messages", mailListMessages);
@@ -490,9 +498,100 @@ app.put("/api/nextcloud/upload", express.raw({ type: "*/*", limit: "100mb" }), n
 /* ─── Messenger (multi-platform) ─── */
 
 app.get("/api/messenger/conversations", messengerListConversations);
+app.get("/api/messenger/all-conversations", messengerAllConversations);
 app.get("/api/messenger/messages", messengerGetMessages);
 app.post("/api/messenger/send", messengerSendMessage);
 app.post("/api/messenger/mark-read", messengerMarkRead);
+
+/* ─── Office 365 Calendar via Microsoft Graph ─── */
+
+app.get("/api/calendar/o365", async (req, res) => {
+  const instanceId = req.query.instance as string;
+  const email = req.query.email as string;
+  const startDate = req.query.start as string; // ISO date: 2026-03-01
+  const endDate = req.query.end as string;     // ISO date: 2026-03-31
+
+  if (!instanceId || !email) return res.status(400).json({ error: "Missing instance or email" });
+
+  try {
+    // Get fresh OAuth2 token via mail auto-config
+    const { mailAutoConfigInternal } = await import("./mail.js");
+    const config = await mailAutoConfigInternal(instanceId, email);
+    if (!config?.accessToken) {
+      return res.status(401).json({ error: "Geen OAuth2 token beschikbaar voor " + email });
+    }
+
+    // Microsoft Graph needs a different token scope — try with the IMAP token first
+    // The IMAP token includes User.Read which gives basic calendar access
+    // For full calendar: need Calendars.Read scope (may need to be added to Connected App)
+    const graphUrl = new URL("https://graph.microsoft.com/v1.0/me/calendarview");
+    graphUrl.searchParams.set("startdatetime", (startDate || new Date().toISOString().split("T")[0]) + "T00:00:00Z");
+    graphUrl.searchParams.set("enddatetime", (endDate || (() => { const d = new Date(); d.setMonth(d.getMonth() + 1); return d.toISOString().split("T")[0]; })()) + "T23:59:59Z");
+    graphUrl.searchParams.set("$top", "200");
+    graphUrl.searchParams.set("$select", "id,subject,start,end,isAllDay,location,bodyPreview,organizer,attendees,webLink,isCancelled");
+    graphUrl.searchParams.set("$orderby", "start/dateTime");
+
+    // The IMAP token won't work for Graph — we need to get a Graph token
+    // Refresh the token with Graph scopes
+    if (!config.refreshToken || !config.clientId || !config.clientSecret || !config.tokenUri) {
+      return res.status(400).json({ error: "OAuth2 refresh credentials niet beschikbaar" });
+    }
+
+    // Try with Calendars.Read first, fallback to broader scope
+    const tokenResp = await fetch(config.tokenUri, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        client_id: config.clientId,
+        client_secret: config.clientSecret,
+        refresh_token: config.refreshToken,
+        grant_type: "refresh_token",
+        scope: "https://graph.microsoft.com/.default offline_access",
+      }),
+    });
+    const tokenData = await tokenResp.json() as { access_token?: string; error?: string; error_description?: string };
+    if (!tokenData.access_token) {
+      return res.status(401).json({ error: `Graph token refresh failed: ${tokenData.error_description || tokenData.error || "unknown"}` });
+    }
+
+    const graphResp = await fetch(graphUrl.toString(), {
+      headers: {
+        Authorization: `Bearer ${tokenData.access_token}`,
+        Accept: "application/json",
+        Prefer: 'outlook.timezone="Europe/Amsterdam"',
+      },
+      signal: AbortSignal.timeout(15000),
+    });
+
+    if (!graphResp.ok) {
+      const errText = await graphResp.text();
+      console.error("[o365-calendar] Graph API error:", graphResp.status, errText.slice(0, 200));
+      return res.status(graphResp.status).json({ error: `Graph API: ${graphResp.status}` });
+    }
+
+    const graphData = await graphResp.json() as { value: any[] };
+    const events = (graphData.value || [])
+      .filter((e: any) => !e.isCancelled)
+      .map((e: any) => ({
+        id: e.id,
+        subject: e.subject || "(Geen titel)",
+        start: e.start?.dateTime || "",
+        end: e.end?.dateTime || "",
+        isAllDay: e.isAllDay || false,
+        location: e.location?.displayName || "",
+        bodyPreview: e.bodyPreview || "",
+        organizer: e.organizer?.emailAddress?.name || "",
+        attendees: (e.attendees || []).map((a: any) => a.emailAddress?.name || a.emailAddress?.address).filter(Boolean),
+        webLink: e.webLink || "",
+      }));
+
+    console.log(`[o365-calendar] Loaded ${events.length} events for ${email}`);
+    res.json({ data: events });
+  } catch (err) {
+    console.error("[o365-calendar] Error:", (err as Error).message);
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
 
 /* ─── iCal calendar proxy ─── */
 
@@ -660,15 +759,37 @@ export async function startServer(port?: number): Promise<number> {
     console.log(`[server] No instances configured. Add them to the config file above.`);
   }
 
-  // Seed 3BM NextCloud credentials into vault if not already present
+  // Ensure 3BM NextCloud credentials are always present in vault
   const vaultEntries = readVault();
   const bmEntry = vaultEntries.find(e => e.id === "3bm");
-  if (bmEntry && !bmEntry.nextcloudUrl) {
-    bmEntry.nextcloudUrl = "https://nextcloud.3bm.cloud";
-    bmEntry.nextcloudUser = "maarten@3bm.co.nl";
-    bmEntry.nextcloudPass = "5ngz4wdVl8ft";
-    writeVault(vaultEntries);
-    console.log("[server] Seeded 3BM NextCloud credentials into vault");
+  if (bmEntry) {
+    const needsSeed = !bmEntry.nextcloudUrl || !bmEntry.nextcloudUser || !bmEntry.nextcloudPass;
+    if (needsSeed) {
+      upsertVaultEntry({
+        id: "3bm",
+        nextcloudUrl: "https://nextcloud.3bm.cloud",
+        nextcloudUser: "maarten@3bm.co.nl",
+        nextcloudPass: "5ngz4wdVl8ft",
+      });
+      console.log("[server] Seeded/restored 3BM NextCloud credentials into vault");
+    }
+  }
+  // Ensure Impertio mail credentials are always present
+  const impEntry = vaultEntries.find(e => e.id === "impertio");
+  if (impEntry && (!impEntry.mailUser || !impEntry.mailPass)) {
+    upsertVaultEntry({
+      id: "impertio",
+      mailHost: "mail.impertio.nl",
+      mailPort: 993,
+      mailUser: "maarten@impertio.nl",
+      mailPass: "Welkom2026",
+      mailSecure: true,
+      smtpHost: "mail.impertio.nl",
+      smtpPort: 587,
+      smtpUser: "maarten@impertio.nl",
+      smtpPass: "Welkom2026",
+    });
+    console.log("[server] Seeded/restored Impertio mail credentials into vault");
   }
 
   // Set up static file serving (lazy so ERPNEXT_LEVEL_DIST from electron is available)
@@ -701,6 +822,13 @@ export async function startServer(port?: number): Promise<number> {
     server.listen(listenPort, () => {
       const actualPort = (server.address() as { port: number }).port;
       console.log(`[server] Backend running on http://localhost:${actualPort}`);
+
+      // Run health checks in background after startup (30s delay to let caches load)
+      setTimeout(() => {
+        console.log("[server] Starting automatic health checks...");
+        runAllTests().catch(err => console.error("[health] Auto-run failed:", err));
+      }, 30_000);
+
       resolve(actualPort);
     });
   });
@@ -711,6 +839,14 @@ const isMain = !process.env.ELECTRON && (
   process.argv[1]?.endsWith("index.ts") ||
   process.argv[1]?.endsWith("index.js")
 );
+
+// Prevent crashes from unhandled promise rejections (e.g. IMAP timeouts)
+process.on("unhandledRejection", (reason) => {
+  console.error("[server] Unhandled rejection:", reason);
+});
+process.on("uncaughtException", (err) => {
+  console.error("[server] Uncaught exception:", err);
+});
 
 if (isMain) {
   startServer().catch((err) => {

@@ -164,6 +164,7 @@ class MailAccountCache {
           client_id: this.creds.clientId,
           client_secret: this.creds.clientSecret,
           refresh_token: this.creds.refreshToken,
+          scope: "https://outlook.office365.com/IMAP.AccessAsUser.All https://outlook.office365.com/SMTP.Send offline_access",
         }),
       });
 
@@ -247,7 +248,7 @@ class MailAccountCache {
     }
   }
 
-  /** Background refresh: re-fetch INBOX list + preload new bodies */
+  /** Background refresh: re-fetch ALL INBOX messages + preload new bodies */
   private async backgroundRefresh() {
     if (Date.now() - this.lastActivity > MailAccountCache.IDLE_TIMEOUT) {
       this.destroy();
@@ -256,7 +257,8 @@ class MailAccountCache {
 
     try {
       await this.fetchFolders(true);
-      const result = await this.fetchMessages("INBOX", true);
+      // Fetch inbox messages — use large pageSize to get all
+      const result = await this.fetchMessages("INBOX", true, 1, 5000);
       // Preload bodies for any new messages not yet cached
       this.preloadBodies("INBOX", result.messages).catch(() => {});
     } catch {
@@ -287,8 +289,10 @@ class MailAccountCache {
   }
 
   /** Fetch and cache messages for a folder */
-  async fetchMessages(folder: string, force = false, page = 1, pageSize = 50): Promise<{ messages: CachedMessage[]; total: number }> {
-    const cacheKey = `${folder}:${page}:${pageSize}`;
+  async fetchMessages(folder: string, force = false, page = 1, pageSize = 50, sinceDays?: number): Promise<{ messages: CachedMessage[]; total: number }> {
+    // pageSize=0 means "all" — use large number
+    if (pageSize === 0) pageSize = 5000;
+    const cacheKey = `${folder}:${page}:${pageSize}:${sinceDays || "all"}`;
 
     if (!force) {
       const cached = this.folderMessages.get(cacheKey);
@@ -303,21 +307,41 @@ class MailAccountCache {
       const status = client.mailbox;
       const total = status?.exists || 0;
 
-      if (total === 0) {
-        const result = { messages: [] as CachedMessage[], total: 0 };
-        this.folderMessages.set(cacheKey, { ...result, ts: Date.now() });
-        return result;
+      // Note: Office365 may report exists=0 even when there ARE messages.
+      // We don't short-circuit here — let the fetch attempt run.
+
+      // Use IMAP SEARCH with SINCE date filter when sinceDays is specified
+      let fetchRange: string | number[];
+      if (sinceDays && sinceDays > 0) {
+        const sinceDate = new Date();
+        sinceDate.setDate(sinceDate.getDate() - sinceDays);
+        const uids = await client.search({ since: sinceDate }, { uid: true });
+        if (!uids || uids.length === 0) {
+          const result = { messages: [] as CachedMessage[], total: 0 };
+          this.folderMessages.set(cacheKey, { ...result, ts: Date.now() });
+          return result;
+        }
+        const sortedUids = [...uids].sort((a, b) => b - a);
+        const startIdx = (page - 1) * pageSize;
+        const pageUids = sortedUids.slice(startIdx, startIdx + pageSize);
+        if (pageUids.length === 0) {
+          return { messages: [], total: sortedUids.length };
+        }
+        fetchRange = pageUids;
+      } else {
+        const end = total;
+        const start = Math.max(1, end - (page * pageSize) + 1);
+        const fetchEnd = Math.max(1, end - ((page - 1) * pageSize));
+        fetchRange = `${start}:${fetchEnd}`;
       }
 
-      const end = total;
-      const start = Math.max(1, end - (page * pageSize) + 1);
-      const fetchEnd = Math.max(1, end - ((page - 1) * pageSize));
-      const range = `${start}:${fetchEnd}`;
-
       const messages: CachedMessage[] = [];
-      for await (const msg of client.fetch(range, {
-        envelope: true, flags: true, bodyStructure: true, uid: true,
-      })) {
+      const fetchOptions = { envelope: true, flags: true, bodyStructure: true, uid: true };
+      const useUidFetch = Array.isArray(fetchRange);
+      const fetchSource = useUidFetch
+        ? client.fetch(fetchRange as number[], fetchOptions, { uid: true })
+        : client.fetch(fetchRange as string, fetchOptions);
+      for await (const msg of fetchSource) {
         let hasAttachments = false;
         if (msg.bodyStructure) {
           const checkParts = (part: typeof msg.bodyStructure): boolean => {
@@ -485,7 +509,19 @@ class MailAccountCache {
     }
   }
 
-  /** Delete a message */
+  /** Remove a message from local caches only (for optimistic delete) */
+  removeCachedMessage(folder: string, uid: number) {
+    this.fullMessages.delete(`${folder}:${uid}`);
+    // Remove from all folder message list caches
+    for (const [key, cache] of this.folderMessages) {
+      if (key.startsWith(`${folder}:`)) {
+        cache.messages = cache.messages.filter(m => m.uid !== uid);
+        cache.total = Math.max(0, cache.total - 1);
+      }
+    }
+  }
+
+  /** Delete a message via IMAP */
   async deleteMessage(folder: string, uid: number): Promise<void> {
     const client = await this.ensureConnected();
     const lock = await client.getMailboxLock(folder);
@@ -494,9 +530,12 @@ class MailAccountCache {
     } finally {
       lock.release();
     }
+    // Clean up any remaining cached data
     this.fullMessages.delete(`${folder}:${uid}`);
-    for (const [key] of this.folderMessages) {
-      if (key.startsWith(`${folder}:`)) this.folderMessages.delete(key);
+    for (const [key, cache] of this.folderMessages) {
+      if (key.startsWith(`${folder}:`)) {
+        cache.messages = cache.messages.filter(m => m.uid !== uid);
+      }
     }
   }
 
@@ -633,9 +672,50 @@ function getAccountCache(creds: MailCredentials): MailAccountCache {
   return cache;
 }
 
+/* ─── Cached resolved credentials per instance+email ─── */
+const resolvedCredsCache = new Map<string, { creds: MailCredentials; ts: number }>();
+const CREDS_CACHE_TTL = 4 * 60 * 1000; // 4 min (OAuth2 tokens last 5 min)
+
+/** Resolve credentials server-side from instance+email, with caching */
+async function resolveCredentials(instanceId: string, email: string): Promise<MailCredentials | null> {
+  const cacheKey = `${instanceId}:${email}`;
+  const cached = resolvedCredsCache.get(cacheKey);
+  if (cached && Date.now() - cached.ts < CREDS_CACHE_TTL) return cached.creds;
+
+  const data = await mailAutoConfigInternal(instanceId, email);
+  if (!data?.host) return null;
+
+  const creds: MailCredentials = {
+    host: data.host,
+    port: data.port || 993,
+    user: data.user || email,
+    pass: data.pass || "",
+    secure: data.secure !== false,
+    authMode: data.authMode || "password",
+    accessToken: data.accessToken,
+    refreshToken: data.refreshToken,
+    clientId: data.clientId,
+    clientSecret: data.clientSecret,
+    tokenUri: data.tokenUri,
+    smtpHost: data.smtpHost,
+    smtpPort: data.smtpPort,
+    smtpSecure: data.smtpSecure,
+  };
+  resolvedCredsCache.set(cacheKey, { creds, ts: Date.now() });
+  return creds;
+}
+
 /* ─── Helpers ─── */
 
-function getCredentials(req: Request): MailCredentials | null {
+async function getCredentials(req: Request): Promise<MailCredentials | null> {
+  // New approach: resolve from instance + email (server-side)
+  const instanceId = req.query.instance as string;
+  const email = req.query.email as string;
+  if (instanceId && email) {
+    return resolveCredentials(instanceId, email);
+  }
+
+  // Legacy: full credentials in query params
   const host = req.query.host as string;
   const port = parseInt(req.query.port as string || "993", 10);
   const user = req.query.user as string;
@@ -710,7 +790,7 @@ async function withClient<T>(
 
 /** Test connection */
 export async function mailTestConnection(req: Request, res: Response) {
-  const creds = getCredentials(req);
+  const creds = await getCredentials(req);
   if (!creds) return res.status(400).json({ error: "Missing host, user, or pass" });
 
   try {
@@ -724,7 +804,7 @@ export async function mailTestConnection(req: Request, res: Response) {
 
 /** List mailbox folders — served from cache */
 export async function mailListFolders(req: Request, res: Response) {
-  const creds = getCredentials(req);
+  const creds = await getCredentials(req);
   if (!creds) return res.status(400).json({ error: "Missing credentials" });
 
   try {
@@ -738,16 +818,21 @@ export async function mailListFolders(req: Request, res: Response) {
 
 /** List messages — served from cache */
 export async function mailListMessages(req: Request, res: Response) {
-  const creds = getCredentials(req);
+  const creds = await getCredentials(req);
   if (!creds) return res.status(400).json({ error: "Missing credentials" });
 
   const folder = (req.query.folder as string) || "INBOX";
   const page = parseInt(req.query.page as string || "1", 10);
   const pageSize = parseInt(req.query.pageSize as string || "50", 10);
+  const sinceDays = req.query.sinceDays ? parseInt(req.query.sinceDays as string, 10) : undefined;
 
   try {
     const cache = getAccountCache(creds);
-    const result = await cache.fetchMessages(folder, false, page, pageSize);
+    const result = await cache.fetchMessages(folder, false, page, pageSize, sinceDays);
+    // Preload message bodies in background for fast opening
+    if (result.messages.length > 0) {
+      cache.preloadBodies(folder, result.messages).catch(() => {});
+    }
     res.json({ data: { ...result, page, pageSize } });
   } catch (err) {
     res.status(500).json({ error: (err as Error).message });
@@ -756,7 +841,7 @@ export async function mailListMessages(req: Request, res: Response) {
 
 /** Get single message with body — served from cache */
 export async function mailGetMessage(req: Request, res: Response) {
-  const creds = getCredentials(req);
+  const creds = await getCredentials(req);
   if (!creds) return res.status(400).json({ error: "Missing credentials" });
 
   const folder = (req.query.folder as string) || "INBOX";
@@ -774,18 +859,47 @@ export async function mailGetMessage(req: Request, res: Response) {
 
 /** Send an email via SMTP */
 export async function mailSend(req: Request, res: Response) {
-  const { smtp, imap, from, to, cc, bcc, subject, html, text, inReplyTo, references, attachments: rawAttachments } = req.body as {
-    smtp: { host: string; port: number; user: string; pass: string; secure: boolean; authMode?: string; accessToken?: string };
+  const { smtp: smtpInput, imap: imapInput, instance, email,
+    from, to, cc, bcc, subject, html, text, inReplyTo, references, attachments: rawAttachments } = req.body as {
+    smtp?: { host: string; port: number; user: string; pass: string; secure: boolean; authMode?: string; accessToken?: string };
     imap?: { host: string; port: number; user: string; pass: string; secure: boolean; authMode?: string; accessToken?: string; refreshToken?: string; clientId?: string; clientSecret?: string; tokenUri?: string };
+    instance?: string; email?: string;
     from: string; to: string[]; cc?: string[]; bcc?: string[];
     subject: string; html?: string; text?: string;
     inReplyTo?: string; references?: string;
     attachments?: { filename: string; content: string; contentType: string }[];
   };
 
+  if (!to || to.length === 0) return res.status(400).json({ error: "Missing recipients" });
+
+  // Resolve credentials server-side if instance + email provided
+  let smtp = smtpInput;
+  let imap = imapInput;
+  if (!smtp && instance && email) {
+    try {
+      const resolved = await resolveCredentials(instance, email);
+      if (resolved) {
+        smtp = {
+          host: resolved.smtpHost || resolved.host,
+          port: resolved.smtpPort || 587,
+          user: resolved.user, pass: resolved.pass,
+          secure: resolved.smtpSecure ?? false,
+          authMode: resolved.authMode,
+          accessToken: resolved.accessToken,
+        };
+        imap = {
+          host: resolved.host, port: resolved.port,
+          user: resolved.user, pass: resolved.pass, secure: resolved.secure,
+          authMode: resolved.authMode, accessToken: resolved.accessToken,
+          refreshToken: resolved.refreshToken, clientId: resolved.clientId,
+          clientSecret: resolved.clientSecret, tokenUri: resolved.tokenUri,
+        };
+      }
+    } catch { /* fallthrough */ }
+  }
+
   if (!smtp?.host || !smtp?.user) return res.status(400).json({ error: "Missing SMTP credentials" });
   if (smtp.authMode !== "oauth2" && !smtp.pass) return res.status(400).json({ error: "Missing SMTP password" });
-  if (!to || to.length === 0) return res.status(400).json({ error: "Missing recipients" });
 
   try {
     const smtpAuth = smtp.authMode === "oauth2"
@@ -870,20 +984,22 @@ export async function mailSend(req: Request, res: Response) {
 
 /** Delete a message */
 export async function mailDeleteMessage(req: Request, res: Response) {
-  const creds = getCredentials(req);
+  const creds = await getCredentials(req);
   if (!creds) return res.status(400).json({ error: "Missing credentials" });
 
   const folder = (req.query.folder as string) || "INBOX";
   const uid = parseInt(req.query.uid as string || "0", 10);
   if (!uid) return res.status(400).json({ error: "Missing uid" });
 
-  try {
-    const cache = getAccountCache(creds);
-    await cache.deleteMessage(folder, uid);
-    res.json({ ok: true });
-  } catch (err) {
-    res.status(500).json({ error: (err as Error).message });
-  }
+  // Respond immediately — delete in background
+  const cache = getAccountCache(creds);
+  // Remove from cache immediately so frontend sees it gone
+  cache.removeCachedMessage(folder, uid);
+  res.json({ ok: true });
+  // Async IMAP delete
+  cache.deleteMessage(folder, uid).catch(err => {
+    console.error(`[mail] Background delete failed for uid ${uid}:`, (err as Error).message);
+  });
 }
 
 /**
@@ -900,7 +1016,7 @@ export async function mailDeleteMessage(req: Request, res: Response) {
 export async function mailWarmup(req: Request, res: Response) {
   const creds = req.method === "POST"
     ? getCredentialsFromBody(req.body)
-    : getCredentials(req);
+    : await getCredentials(req);
   if (!creds) return res.status(400).json({ error: "Missing credentials" });
 
   try {
@@ -926,7 +1042,7 @@ export async function mailWarmup(req: Request, res: Response) {
 
 /** Download a specific attachment from a message */
 export async function mailGetAttachment(req: Request, res: Response) {
-  const creds = getCredentials(req);
+  const creds = await getCredentials(req);
   if (!creds) return res.status(400).json({ error: "Missing credentials" });
 
   const folder = (req.query.folder as string) || "INBOX";
@@ -949,7 +1065,7 @@ export async function mailGetAttachment(req: Request, res: Response) {
 
 /** Create a new mailbox folder */
 export async function mailCreateFolder(req: Request, res: Response) {
-  const creds = getCredentials(req);
+  const creds = await getCredentials(req);
   if (!creds) return res.status(400).json({ error: "Missing credentials" });
 
   const folderName = req.query.name as string;
@@ -966,7 +1082,7 @@ export async function mailCreateFolder(req: Request, res: Response) {
 
 /** Move a message to another folder */
 export async function mailMoveMessage(req: Request, res: Response) {
-  const creds = getCredentials(req);
+  const creds = await getCredentials(req);
   if (!creds) return res.status(400).json({ error: "Missing credentials" });
 
   const fromFolder = (req.query.folder as string) || "INBOX";
@@ -975,18 +1091,18 @@ export async function mailMoveMessage(req: Request, res: Response) {
   if (!uid) return res.status(400).json({ error: "Missing uid" });
   if (!toFolder) return res.status(400).json({ error: "Missing toFolder" });
 
-  try {
-    const cache = getAccountCache(creds);
-    await cache.moveMessage(fromFolder, uid, toFolder);
-    res.json({ ok: true });
-  } catch (err) {
-    res.status(500).json({ error: (err as Error).message });
-  }
+  // Respond immediately — move in background
+  const cache = getAccountCache(creds);
+  cache.removeCachedMessage(fromFolder, uid);
+  res.json({ ok: true });
+  cache.moveMessage(fromFolder, uid, toFolder).catch(err => {
+    console.error(`[mail] Background move failed for uid ${uid}:`, (err as Error).message);
+  });
 }
 
 /** Mark a message as unread */
 export async function mailMarkUnread(req: Request, res: Response) {
-  const creds = getCredentials(req);
+  const creds = await getCredentials(req);
   if (!creds) return res.status(400).json({ error: "Missing credentials" });
 
   const folder = (req.query.folder as string) || "INBOX";
@@ -1004,7 +1120,7 @@ export async function mailMarkUnread(req: Request, res: Response) {
 
 /** Rename a mailbox folder */
 export async function mailRenameFolder(req: Request, res: Response) {
-  const creds = getCredentials(req);
+  const creds = await getCredentials(req);
   if (!creds) return res.status(400).json({ error: "Missing credentials" });
 
   // Read from body (preferred) or fall back to query params for backward compat
@@ -1032,86 +1148,150 @@ export async function mailCacheStats(_req: Request, res: Response) {
 }
 
 /** Auto-configure mail from ERPNext (fetches OAuth tokens for Office 365) */
+/** Internal auto-config logic (no Express dependency) */
+export async function mailAutoConfigInternal(instanceId: string, email: string): Promise<any> {
+  const inst = getInstance(instanceId);
+  if (!inst) throw new Error("Unknown instance: " + instanceId);
+
+  // Fetch Email Account
+  const emailAccResult = await proxyRequest(inst,
+    `/api/resource/Email Account?filters=${encodeURIComponent(JSON.stringify([["email_id", "=", email]]))}&fields=${encodeURIComponent(JSON.stringify(["name", "email_id", "email_server", "incoming_port", "use_ssl", "smtp_server", "smtp_port", "use_tls", "signature"]))}`
+  );
+  const emailAccounts = JSON.parse(emailAccResult.body)?.data || [];
+  if (emailAccounts.length === 0) throw new Error("Email Account not found in ERPNext");
+  const emailAcc = emailAccounts[0];
+
+  // Fetch Connected App (Microsoft 365)
+  const connAppResult = await proxyRequest(inst,
+    `/api/resource/Connected App?fields=${encodeURIComponent(JSON.stringify(["name", "client_id", "provider_name", "token_uri"]))}&limit_page_length=10`
+  );
+  const allConnApps = JSON.parse(connAppResult.body)?.data || [];
+  const connApps = allConnApps.filter((a: any) => a.provider_name?.toLowerCase().includes("microsoft") || a.client_id);
+
+  if (connApps.length === 0) {
+    // No Connected App found — return basic config with password from ERPNext
+    let password = "";
+    try {
+      const pwResult = await proxyRequest(inst,
+        `/api/method/frappe.client.get_password?doctype=Email+Account&name=${encodeURIComponent(emailAcc.name)}&fieldname=password`
+      );
+      password = JSON.parse(pwResult.body)?.message || "";
+    } catch { /* ignore */ }
+
+    // Also check vault for stored credentials
+    if (!password) {
+      try {
+        const vaultEntries = (await import("./vault.js")).readVault();
+        const entry = vaultEntries.find((e: any) => e.id === instanceId);
+        if (entry?.mailPass && entry?.mailUser === email) {
+          password = entry.mailPass;
+        }
+      } catch { /* ignore */ }
+    }
+
+    return {
+      authMode: "password",
+      host: emailAcc.email_server || "",
+      port: parseInt(emailAcc.incoming_port || "993"),
+      user: email,
+      pass: password,
+      secure: !!emailAcc.use_ssl,
+      smtpHost: emailAcc.smtp_server || "",
+      smtpPort: parseInt(emailAcc.smtp_port || "587"),
+      smtpSecure: false,
+      signature: emailAcc.signature || "",
+    };
+  }
+
+  const connApp = connApps[0];
+
+  // Get client secret
+  const secretResult = await proxyRequest(inst,
+    `/api/method/frappe.client.get_password?doctype=Connected+App&name=${encodeURIComponent(connApp.name)}&fieldname=client_secret`
+  );
+  const clientSecret = JSON.parse(secretResult.body)?.message || "";
+
+  // Get Token Cache
+  const tokenName = `${connApp.name}-${email}`;
+  const accessTokenResult = await proxyRequest(inst,
+    `/api/method/frappe.client.get_password?doctype=Token+Cache&name=${encodeURIComponent(tokenName)}&fieldname=access_token`
+  );
+  const accessToken = JSON.parse(accessTokenResult.body)?.message || "";
+
+  const refreshTokenResult = await proxyRequest(inst,
+    `/api/method/frappe.client.get_password?doctype=Token+Cache&name=${encodeURIComponent(tokenName)}&fieldname=refresh_token`
+  );
+  const refreshToken = JSON.parse(refreshTokenResult.body)?.message || "";
+
+  // Always try to refresh the token (it's likely expired)
+  let finalAccessToken = accessToken;
+  if (refreshToken && clientSecret && connApp.client_id && connApp.token_uri) {
+    try {
+      console.log("[mail-auto-config] Refreshing OAuth2 token for", email);
+      const tokenBody = new URLSearchParams({
+        client_id: connApp.client_id,
+        client_secret: clientSecret,
+        refresh_token: refreshToken,
+        grant_type: "refresh_token",
+        scope: "https://outlook.office365.com/IMAP.AccessAsUser.All https://outlook.office365.com/SMTP.Send offline_access",
+      });
+      const tokenResp = await fetch(connApp.token_uri, {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: tokenBody,
+      });
+      const tokenResult = await tokenResp.json() as { access_token?: string; error?: string; error_description?: string };
+      if (tokenResult.access_token) {
+        finalAccessToken = tokenResult.access_token;
+        console.log("[mail-auto-config] Token refreshed successfully for", email);
+      } else {
+        console.error("[mail-auto-config] Token refresh returned error:", tokenResult.error, tokenResult.error_description);
+      }
+    } catch (e) {
+      console.error("[mail-auto-config] Token refresh fetch failed:", (e as Error).message);
+    }
+  }
+
+  return {
+    authMode: finalAccessToken ? "oauth2" : "password",
+    host: emailAcc.email_server || "outlook.office365.com",
+    port: parseInt(emailAcc.incoming_port || "993"),
+    user: email,
+    secure: emailAcc.use_ssl !== 0,
+    smtpHost: emailAcc.smtp_server || "smtp.office365.com",
+    smtpPort: parseInt(emailAcc.smtp_port || "587"),
+    smtpSecure: false, // O365 uses STARTTLS
+    accessToken: finalAccessToken,
+    refreshToken,
+    clientId: connApp.client_id,
+    clientSecret,
+    tokenUri: connApp.token_uri,
+    signature: emailAcc.signature || "",
+  };
+}
+
 export async function mailAutoConfig(req: Request, res: Response) {
   const instanceId = req.query.instance as string;
   const email = req.query.email as string;
   if (!instanceId || !email) return res.status(400).json({ error: "Missing instance or email" });
 
-  const inst = getInstance(instanceId);
-  if (!inst) return res.status(404).json({ error: "Unknown instance" });
-
   try {
-    // Fetch Email Account
-    const emailAccResult = await proxyRequest(inst,
-      `/api/resource/Email Account?filters=${encodeURIComponent(JSON.stringify([["email_id", "=", email]]))}&fields=${encodeURIComponent(JSON.stringify(["name", "email_id", "email_server", "incoming_port", "use_ssl", "smtp_server", "smtp_port", "use_tls", "signature"]))}`
-    );
-    const emailAccounts = JSON.parse(emailAccResult.body)?.data || [];
-    if (emailAccounts.length === 0) return res.status(404).json({ error: "Email Account not found in ERPNext" });
-    const emailAcc = emailAccounts[0];
-
-    // Fetch Connected App (Microsoft 365)
-    const connAppResult = await proxyRequest(inst,
-      `/api/resource/Connected App?filters=${encodeURIComponent(JSON.stringify([["provider_name", "=", "Microsoft"]]))}&fields=${encodeURIComponent(JSON.stringify(["name", "client_id", "token_uri"]))}`
-    );
-    const connApps = JSON.parse(connAppResult.body)?.data || [];
-
-    if (connApps.length === 0) {
-      // No Connected App found — return basic config without OAuth
-      return res.json({
-        data: {
-          authMode: "password",
-          host: emailAcc.email_server || "",
-          port: parseInt(emailAcc.incoming_port || "993"),
-          user: email,
-          secure: !!emailAcc.use_ssl,
-          smtpHost: emailAcc.smtp_server || "",
-          smtpPort: parseInt(emailAcc.smtp_port || "587"),
-          smtpSecure: false,
-          signature: emailAcc.signature || "",
-        },
-      });
-    }
-
-    const connApp = connApps[0];
-
-    // Get client secret
-    const secretResult = await proxyRequest(inst,
-      `/api/method/frappe.client.get_password?doctype=Connected+App&name=${encodeURIComponent(connApp.name)}&fieldname=client_secret`
-    );
-    const clientSecret = JSON.parse(secretResult.body)?.message || "";
-
-    // Get Token Cache
-    const tokenName = `${connApp.name}-${email}`;
-    const accessTokenResult = await proxyRequest(inst,
-      `/api/method/frappe.client.get_password?doctype=Token+Cache&name=${encodeURIComponent(tokenName)}&fieldname=access_token`
-    );
-    const accessToken = JSON.parse(accessTokenResult.body)?.message || "";
-
-    const refreshTokenResult = await proxyRequest(inst,
-      `/api/method/frappe.client.get_password?doctype=Token+Cache&name=${encodeURIComponent(tokenName)}&fieldname=refresh_token`
-    );
-    const refreshToken = JSON.parse(refreshTokenResult.body)?.message || "";
-
-    res.json({
-      data: {
-        authMode: accessToken ? "oauth2" : "password",
-        host: emailAcc.email_server || "outlook.office365.com",
-        port: parseInt(emailAcc.incoming_port || "993"),
-        user: email,
-        secure: emailAcc.use_ssl !== 0,
-        smtpHost: emailAcc.smtp_server || "smtp.office365.com",
-        smtpPort: parseInt(emailAcc.smtp_port || "587"),
-        smtpSecure: false, // O365 uses STARTTLS
-        accessToken,
-        refreshToken,
-        clientId: connApp.client_id,
-        clientSecret,
-        tokenUri: connApp.token_uri,
-        signature: emailAcc.signature || "",
-      },
-    });
+    const data = await mailAutoConfigInternal(instanceId, email);
+    res.json({ data });
   } catch (err) {
     console.error("[mail-auto-config] Error:", (err as Error).message);
     res.status(500).json({ error: (err as Error).message });
   }
+}
+
+/* ─── Internal functions for health checks ─── */
+
+export async function listFoldersInternal(creds: MailCredentials): Promise<CachedFolder[]> {
+  const cache = getAccountCache(creds);
+  return cache.fetchFolders();
+}
+
+export async function listMessagesInternal(opts: MailCredentials & { folder?: string; pageSize?: number }): Promise<{ messages: CachedMessage[]; total: number }> {
+  const cache = getAccountCache(opts);
+  return cache.fetchMessages(opts.folder || "INBOX", false, 1, opts.pageSize || 50);
 }

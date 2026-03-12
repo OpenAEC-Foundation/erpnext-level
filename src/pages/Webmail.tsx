@@ -106,20 +106,6 @@ function getImapConfig(): ImapConfig {
   };
 }
 
-function getSmtpConfig() {
-  const id = getActiveInstanceId();
-  const authMode = (localStorage.getItem(`pref_${id}_imap_authMode`) || "password") as "password" | "oauth2";
-  return {
-    host: localStorage.getItem(`pref_${id}_smtp_host`) || localStorage.getItem(`pref_${id}_imap_host`) || "",
-    port: localStorage.getItem(`pref_${id}_smtp_port`) || "587",
-    user: localStorage.getItem(`pref_${id}_smtp_user`) || localStorage.getItem(`pref_${id}_imap_user`) || "",
-    pass: localStorage.getItem(`pref_${id}_smtp_pass`) || localStorage.getItem(`pref_${id}_imap_pass`) || "",
-    secure: localStorage.getItem(`pref_${id}_smtp_secure`) === "true",
-    authMode,
-    accessToken: localStorage.getItem(`pref_${id}_imap_accessToken`) || undefined,
-  };
-}
-
 function saveImapConfig(config: ImapConfig) {
   const id = getActiveInstanceId();
   localStorage.setItem(`pref_${id}_imap_host`, config.host);
@@ -145,19 +131,13 @@ function saveImapConfig(config: ImapConfig) {
 }
 
 function buildQuery(config: ImapConfig, extra?: Record<string, string>): string {
-  const base: Record<string, string> = {
-    host: config.host, port: config.port, user: config.user,
-    pass: config.pass, secure: String(config.secure),
-  };
-  if (config.authMode === "oauth2") {
-    base.authMode = "oauth2";
-    if (config.accessToken) base.accessToken = config.accessToken;
-    if (config.refreshToken) base.refreshToken = config.refreshToken;
-    if (config.clientId) base.clientId = config.clientId;
-    if (config.clientSecret) base.clientSecret = config.clientSecret;
-    if (config.tokenUri) base.tokenUri = config.tokenUri;
-  }
-  const params = new URLSearchParams({ ...base, ...extra });
+  // New approach: just pass instance + email — server resolves credentials
+  const instanceId = getActiveInstanceId();
+  const params = new URLSearchParams({
+    instance: instanceId,
+    email: config.user,
+    ...extra,
+  });
   return params.toString();
 }
 
@@ -612,8 +592,6 @@ function ComposeWindow({ compose, onClose, onSent, config }: {
   async function handleSend() {
     if (!to.trim()) { setError("Vul een ontvanger in"); return; }
     setSending(true); setError("");
-    const smtp = getSmtpConfig();
-
     // Convert attachments to base64
     const attachmentData: { filename: string; content: string; contentType: string }[] = [];
     for (const file of attachments) {
@@ -644,21 +622,13 @@ function ComposeWindow({ compose, onClose, onSent, config }: {
         htmlBody = htmlBody.replace(/\n/g, "<br>");
       }
 
+      const instanceId = getActiveInstanceId();
       const res = await fetch("/api/mail/send", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          smtp: {
-            host: smtp.host, port: parseInt(smtp.port), user: smtp.user, pass: smtp.pass, secure: smtp.secure,
-            ...(smtp.authMode === "oauth2" ? { authMode: "oauth2", accessToken: smtp.accessToken } : {}),
-          },
-          imap: {
-            host: config.host, port: parseInt(config.port), user: config.user, pass: config.pass, secure: config.secure,
-            ...(config.authMode === "oauth2" ? {
-              authMode: "oauth2", accessToken: config.accessToken, refreshToken: config.refreshToken,
-              clientId: config.clientId, clientSecret: config.clientSecret, tokenUri: config.tokenUri,
-            } : {}),
-          },
+          instance: instanceId,
+          email: config.user,
           from: from,
           to: to.split(/[,;]\s*/).filter(Boolean),
           cc: cc ? cc.split(/[,;]\s*/).filter(Boolean) : undefined,
@@ -1056,16 +1026,18 @@ export default function Webmail() {
   const isConfigured = config.host && config.user && (config.pass || config.authMode === "oauth2");
 
   const loadFolders = useCallback(async () => {
-    if (!isConfigured) return;
+    if (!config.user) return;
     try {
       const res = await fetch(`/api/mail/folders?${buildQuery(config)}`);
-      const data = await res.json();
+      const text = await res.text();
+      if (!text) return;
+      const data = JSON.parse(text);
       if (data.data) setFolders(data.data);
-    } catch { /* ignore */ }
-  }, [config, isConfigured]);
+    } catch (err) { console.error("[Webmail] loadFolders error:", err); }
+  }, [config]);
 
   const loadMessages = useCallback(async (folder?: string, force = false) => {
-    if (!isConfigured) return;
+    if (!config.user) return;
     const f = folder || activeFolder;
 
     // Use cache if available and fresh (< 30s)
@@ -1080,10 +1052,13 @@ export default function Webmail() {
 
     setLoading(true); setError("");
     try {
-      const res = await fetch(`/api/mail/messages?${buildQuery(config, { folder: f })}`);
-      const data = await res.json();
-      if (data.error) { setError(data.error); setMessages([]); }
-      else {
+      const res = await fetch(`/api/mail/messages?${buildQuery(config, { folder: f, pageSize: "5000" })}`);
+      const text = await res.text();
+      if (!text) { setError("Leeg antwoord van server"); setMessages([]); setLoading(false); return; }
+      const data = JSON.parse(text);
+      if (data.error) {
+        setError(data.error); setMessages([]);
+      } else {
         const msgs = data.data?.messages || [];
         const tot = data.data?.total || 0;
         setMessages(msgs);
@@ -1092,29 +1067,105 @@ export default function Webmail() {
       }
     } catch (err) { setError((err as Error).message); }
     finally { setLoading(false); }
-  }, [config, activeFolder, isConfigured]);
+  }, [config, activeFolder]);
 
-  // Preload on mount + trigger backend warmup (preloads ALL bodies)
+  // Auto-load config from ERPNext, then preload mail
+  // Server handles token refresh — frontend just sends instance + email
+  const autoLoaded = useRef(false);
   useEffect(() => {
-    if (isConfigured && !showSetup && !preloaded.current) {
+    if (autoLoaded.current) return;
+    autoLoaded.current = true;
+
+    const instanceId = getActiveInstanceId();
+
+    (async () => {
+      let finalConfig = config;
+
+      if (!isConfigured) {
+        // Not configured — try auto-config with employee email
+        const defaultEmployee = localStorage.getItem(`pref_${instanceId}_employee`) || "";
+        let email = "";
+        try {
+          const empResp = await fetch(`/api/resource/Employee?instance=${instanceId}&fields=${encodeURIComponent(JSON.stringify(["name","company_email","user_id"]))}&limit_page_length=50`);
+          const empData = await empResp.json();
+          const employees = empData?.data || [];
+          if (defaultEmployee) {
+            const emp = employees.find((e: any) => e.name === defaultEmployee);
+            email = emp?.company_email || emp?.user_id || "";
+          }
+          if (!email && employees.length > 0) {
+            const withEmail = employees.find((e: any) => e.company_email);
+            email = withEmail?.company_email || employees[0]?.user_id || "";
+          }
+        } catch { /* ignore */ }
+
+        if (email) {
+          try {
+            const res = await fetch(`/api/mail/auto-config?instance=${instanceId}&email=${encodeURIComponent(email)}`);
+            if (res.ok) {
+              const { data } = await res.json();
+              if (data?.host) {
+                finalConfig = {
+                  host: data.host, port: String(data.port || 993), user: data.user || email,
+                  pass: data.pass || "", secure: data.secure !== false,
+                  authMode: data.authMode || "password",
+                  accessToken: data.accessToken, refreshToken: data.refreshToken,
+                  clientId: data.clientId, clientSecret: data.clientSecret, tokenUri: data.tokenUri,
+                  smtpHost: data.smtpHost, smtpPort: String(data.smtpPort || 587), smtpSecure: data.smtpSecure || false,
+                };
+                saveImapConfig(finalConfig);
+                if (data.signature) localStorage.setItem(`pref_${instanceId}_email_signature`, data.signature);
+                setConfig(finalConfig);
+                setShowSetup(false);
+              }
+            }
+          } catch { /* ignore */ }
+        }
+      }
+
+      // Preload mail — server resolves credentials from instance + email
+      const ready = finalConfig.host && finalConfig.user;
+      if (!ready || preloaded.current) return;
       preloaded.current = true;
-      // Trigger backend warmup: persistent connection + preload all bodies
-      fetch("/api/mail/warmup", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          host: config.host, port: parseInt(config.port), user: config.user,
-          pass: config.pass, secure: config.secure,
-          ...(config.authMode === "oauth2" ? {
-            authMode: "oauth2", accessToken: config.accessToken, refreshToken: config.refreshToken,
-            clientId: config.clientId, clientSecret: config.clientSecret, tokenUri: config.tokenUri,
-          } : {}),
-        }),
-      }).catch(() => {});
-      loadFolders();
-      loadMessages("INBOX", true);
-    }
-  }, [isConfigured, showSetup, loadFolders, loadMessages]);
+
+      const q = buildQuery(finalConfig);
+      console.log("[Webmail] Loading mail for", finalConfig.user, "via instance", instanceId);
+
+      // Load folders
+      try {
+        const fRes = await fetch(`/api/mail/folders?${q}`);
+        const fText = await fRes.text();
+        if (fText) {
+          const fData = JSON.parse(fText);
+          if (fData.error) console.error("[Webmail] Folders error:", fData.error);
+          if (fData.data) { setFolders(fData.data); console.log("[Webmail] Loaded", fData.data.length, "folders"); }
+        }
+      } catch (err) { console.error("[Webmail] loadFolders error:", err); }
+
+      // Load messages
+      try {
+        setLoading(true);
+        const mRes = await fetch(`/api/mail/messages?${q}&folder=INBOX&pageSize=5000`);
+        const mText = await mRes.text();
+        if (!mText) { setLoading(false); return; }
+        const mData = JSON.parse(mText);
+        if (mData.error) {
+          setError(mData.error);
+        } else {
+          const msgs = mData.data?.messages || [];
+          const tot = mData.data?.total || 0;
+          console.log("[Webmail] Loaded", msgs.length, "messages from INBOX");
+          setMessages(msgs);
+          setTotal(tot);
+          folderMsgCache.set("INBOX", { messages: msgs, total: tot, ts: Date.now() });
+        }
+      } catch (err) {
+        setError((err as Error).message);
+      } finally {
+        setLoading(false);
+      }
+    })();
+  }, []);
 
   async function openMessage(msg: MailMessage) {
     setSelectedUid(msg.uid);
@@ -1158,23 +1209,25 @@ export default function Webmail() {
     }
   }
 
-  async function handleDeleteMsg(uid: number) {
-    try {
-      await fetch(`/api/mail/message?${buildQuery(config, { folder: activeFolder, uid: String(uid) })}`, { method: "DELETE" });
-      setMessages(prev => prev.filter(m => m.uid !== uid));
-      if (selectedUid === uid) { setSelectedUid(null); setSelectedMsg(null); }
-      folderMsgCache.delete(activeFolder);
-    } catch { /* ignore */ }
+  function handleDeleteMsg(uid: number) {
+    // Optimistic: remove from UI immediately
+    setMessages(prev => prev.filter(m => m.uid !== uid));
+    if (selectedUid === uid) { setSelectedUid(null); setSelectedMsg(null); }
+    folderMsgCache.delete(activeFolder);
+    fullMsgCache.delete(`${activeFolder}:${uid}`);
+    // Fire-and-forget: backend deletes in background
+    fetch(`/api/mail/message?${buildQuery(config, { folder: activeFolder, uid: String(uid) })}`, { method: "DELETE" }).catch(() => {});
   }
 
-  async function handleMoveMsg(uid: number, toFolder: string) {
-    try {
-      await fetch(`/api/mail/move?${buildQuery(config, { folder: activeFolder, uid: String(uid), toFolder })}`, { method: "POST" });
-      setMessages(prev => prev.filter(m => m.uid !== uid));
-      if (selectedUid === uid) { setSelectedUid(null); setSelectedMsg(null); }
-      folderMsgCache.delete(activeFolder);
-      folderMsgCache.delete(toFolder);
-    } catch { /* ignore */ }
+  function handleMoveMsg(uid: number, toFolder: string) {
+    // Optimistic: remove from UI immediately
+    setMessages(prev => prev.filter(m => m.uid !== uid));
+    if (selectedUid === uid) { setSelectedUid(null); setSelectedMsg(null); }
+    folderMsgCache.delete(activeFolder);
+    folderMsgCache.delete(toFolder);
+    fullMsgCache.delete(`${activeFolder}:${uid}`);
+    // Fire-and-forget: backend moves in background
+    fetch(`/api/mail/move?${buildQuery(config, { folder: activeFolder, uid: String(uid), toFolder })}`, { method: "POST" }).catch(() => {});
   }
 
   const [showMoveDropdown, setShowMoveDropdown] = useState(false);

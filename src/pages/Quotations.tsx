@@ -45,7 +45,7 @@ export default function Quotations() {
     setLoading(true);
     setError(null);
     try {
-      const filters: unknown[][] = [["docstatus", "=", 1]];
+      const filters: unknown[][] = [["docstatus", "!=", 2]];
       if (statusFilter.length > 0) filters.push(["status", "in", statusFilter]);
       if (company) filters.push(["company", "=", company]);
       if (fromDate) filters.push(["transaction_date", ">=", fromDate]);

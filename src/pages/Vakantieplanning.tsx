@@ -1,10 +1,13 @@
-import { useEffect, useState, useMemo, useRef } from "react";
-import { fetchList, getErpNextLinkUrl } from "../lib/erpnext";
+import { Fragment, useEffect, useState, useMemo, useRef, useCallback } from "react";
+import { fetchList, fetchDocument, getErpNextLinkUrl } from "../lib/erpnext";
 import CompanySelect from "../components/CompanySelect";
+import { useEmployees } from "../lib/DataContext";
+import { getEmployeeContractHours } from "./Employees";
 import { HOLIDAYS } from "../lib/holidays";
 import {
   CalendarCheck, RefreshCw, Search, Filter, ExternalLink,
-  CheckCircle2, Clock, XCircle, CalendarDays, ZoomIn, ZoomOut, RotateCcw, Users,
+  CheckCircle2, Clock, XCircle, CalendarDays, ZoomIn, ZoomOut, RotateCcw,
+  Thermometer,
 } from "lucide-react";
 
 interface LeaveApplication {
@@ -18,13 +21,25 @@ interface LeaveApplication {
   company: string;
 }
 
-interface ShiftAssignment {
+interface LeaveAllocation {
   name: string;
   employee: string;
   employee_name: string;
-  shift_type: string;
+  leave_type: string;
+  from_date: string;
+  to_date: string;
+  new_leaves_allocated: number;
+  total_leaves_allocated: number;
+  company: string;
+}
+
+interface TimesheetSummary {
+  name: string;
+  employee: string;
+  employee_name: string;
   start_date: string;
   end_date: string;
+  total_hours: number;
   status: string;
   company: string;
 }
@@ -73,9 +88,10 @@ export default function Vakantieplanning() {
   const [year, setYear] = useState(new Date().getFullYear());
   const [statusFilter, setStatusFilter] = useState("");
   const [company, setCompany] = useState(localStorage.getItem("erpnext_default_company") || "");
-  const [activeTab, setActiveTab] = useState<"kalender" | "aanvragen" | "rooster">("kalender");
-  const [shifts, setShifts] = useState<ShiftAssignment[]>([]);
-  const [shiftsLoading, setShiftsLoading] = useState(false);
+  const [activeTab, setActiveTab] = useState<"kalender" | "aanvragen" | "overuren">("overuren");
+  const [timesheets, setTimesheets] = useState<TimesheetSummary[]>([]);
+  const [allocations, setAllocations] = useState<LeaveAllocation[]>([]);
+  const allEmployees = useEmployees();
 
   async function loadData() {
     setLoading(true);
@@ -88,16 +104,51 @@ export default function Vakantieplanning() {
       filters.push(["from_date", "<=", `${year}-12-31`]);
       filters.push(["to_date", ">=", `${year}-01-01`]);
 
-      const list = await fetchList<LeaveApplication>("Leave Application", {
-        fields: [
-          "name", "employee_name", "leave_type", "from_date", "to_date",
-          "total_leave_days", "status", "company",
-        ],
-        filters,
-        limit_page_length: 500,
-        order_by: "from_date asc",
-      });
+      const allocFilters: unknown[][] = [
+        ["docstatus", "=", 1],
+        ["from_date", "<=", `${year}-12-31`],
+        ["to_date", ">=", `${year}-01-01`],
+      ];
+      if (company) allocFilters.push(["company", "=", company]);
+
+      const tsFilters: unknown[][] = [
+        ["docstatus", "=", 1],
+        ["start_date", ">=", `${year}-01-01`],
+        ["start_date", "<=", `${year}-12-31`],
+      ];
+      if (company) tsFilters.push(["company", "=", company]);
+
+      const [list, allocData, tsData] = await Promise.all([
+        fetchList<LeaveApplication>("Leave Application", {
+          fields: [
+            "name", "employee_name", "leave_type", "from_date", "to_date",
+            "total_leave_days", "status", "company",
+          ],
+          filters,
+          limit_page_length: 500,
+          order_by: "from_date asc",
+        }),
+        fetchList<LeaveAllocation>("Leave Allocation", {
+          fields: [
+            "name", "employee", "employee_name", "leave_type", "from_date", "to_date",
+            "new_leaves_allocated", "total_leaves_allocated", "company",
+          ],
+          filters: allocFilters,
+          limit_page_length: 500,
+        }),
+        fetchList<TimesheetSummary>("Timesheet", {
+          fields: [
+            "name", "employee", "employee_name", "start_date", "end_date",
+            "total_hours", "status", "company",
+          ],
+          filters: tsFilters,
+          limit_page_length: 500,
+          order_by: "start_date asc",
+        }),
+      ]);
       setLeaves(list);
+      setAllocations(allocData);
+      setTimesheets(tsData);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Onbekende fout");
     } finally {
@@ -105,36 +156,8 @@ export default function Vakantieplanning() {
     }
   }
 
-  async function loadShifts() {
-    setShiftsLoading(true);
-    try {
-      const filters: unknown[][] = [
-        ["status", "=", "Active"],
-        ["start_date", "<=", `${year}-12-31`],
-        ["end_date", ">=", `${year}-01-01`],
-      ];
-      if (company) filters.push(["company", "=", company]);
-
-      const list = await fetchList<ShiftAssignment>("Shift Assignment", {
-        fields: [
-          "name", "employee", "employee_name", "shift_type",
-          "start_date", "end_date", "status", "company",
-        ],
-        filters,
-        limit_page_length: 0,
-        order_by: "start_date asc",
-      });
-      setShifts(list);
-    } catch {
-      setShifts([]);
-    } finally {
-      setShiftsLoading(false);
-    }
-  }
-
   useEffect(() => {
     loadData();
-    loadShifts();
   }, [year, statusFilter, company]);
 
   const filtered = useMemo(() => {
@@ -153,19 +176,15 @@ export default function Vakantieplanning() {
     return Array.from(map.entries()).sort((a, b) => a[0].localeCompare(b[0]));
   }, [filtered]);
 
-  // Group shifts by employee for rooster
-  const employeeShifts = useMemo(() => {
+  // Filtered employees for overuren view
+  const filteredEmployees = useMemo(() => {
     const q = search.toLowerCase();
-    const filteredShifts = search.trim()
-      ? shifts.filter((s) => s.employee_name.toLowerCase().includes(q))
-      : shifts;
-    const map = new Map<string, ShiftAssignment[]>();
-    for (const s of filteredShifts) {
-      if (!map.has(s.employee_name)) map.set(s.employee_name, []);
-      map.get(s.employee_name)!.push(s);
+    let emps = allEmployees.filter((e: any) => !company || e.company === company);
+    if (search.trim()) {
+      emps = emps.filter((e: any) => e.employee_name.toLowerCase().includes(q));
     }
-    return Array.from(map.entries()).sort((a, b) => a[0].localeCompare(b[0]));
-  }, [shifts, search]);
+    return emps;
+  }, [allEmployees, company, search]);
 
   // KPI counts
   const totalCount = filtered.length;
@@ -287,6 +306,17 @@ export default function Vakantieplanning() {
       {/* Tabs */}
       <div className="flex gap-1 mb-4">
         <button
+          onClick={() => setActiveTab("overuren")}
+          className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors cursor-pointer ${
+            activeTab === "overuren"
+              ? "bg-3bm-teal text-white"
+              : "bg-white text-slate-600 hover:bg-slate-50 border border-slate-200"
+          }`}
+        >
+          <Clock size={16} />
+          Overuren
+        </button>
+        <button
           onClick={() => setActiveTab("kalender")}
           className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors cursor-pointer ${
             activeTab === "kalender"
@@ -308,29 +338,19 @@ export default function Vakantieplanning() {
           <CalendarCheck size={16} />
           Aanvragen
         </button>
-        <button
-          onClick={() => setActiveTab("rooster")}
-          className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors cursor-pointer ${
-            activeTab === "rooster"
-              ? "bg-3bm-teal text-white"
-              : "bg-white text-slate-600 hover:bg-slate-50 border border-slate-200"
-          }`}
-        >
-          <Users size={16} />
-          Rooster
-        </button>
       </div>
 
       {/* Content */}
-      {activeTab === "rooster" ? (
-        shiftsLoading ? (
+      {activeTab === "overuren" ? (
+        loading ? (
           <div className="flex items-center justify-center py-16 text-slate-400">Laden...</div>
         ) : (
-          <RoosterView
-            employeeShifts={employeeShifts}
+          <OverurenView
+            employees={filteredEmployees}
+            timesheets={timesheets}
+            leaves={leaves}
             year={year}
-            totalDays={totalDays}
-            monthPositions={monthPositions}
+            company={company}
           />
         )
       ) : loading ? (
@@ -676,325 +696,169 @@ function CalendarView({
   );
 }
 
-/* ──────────── Rooster View ──────────── */
+/* ──────────── Overuren View ──────────── */
 
-interface ShiftSummary {
-  from_date: string;
-  to_date: string;
-  shift_type: string;
-  total_shifts: number;
-  avg_days_per_week: number;
-}
-
-function summarizeShifts(shiftList: ShiftAssignment[]): ShiftSummary[] {
-  const groups = new Map<string, ShiftAssignment[]>();
-  for (const s of shiftList) {
-    if (!groups.has(s.shift_type)) groups.set(s.shift_type, []);
-    groups.get(s.shift_type)!.push(s);
-  }
-
-  const summaries: ShiftSummary[] = [];
-
-  for (const [shiftType, group] of groups) {
-    const sorted = [...group].sort((a, b) => a.start_date.localeCompare(b.start_date));
-    const from_date = sorted[0].start_date;
-    const to_date = sorted[sorted.length - 1].end_date;
-
-    let totalShiftDays = 0;
-    for (const s of sorted) {
-      const start = new Date(s.start_date);
-      const end = new Date(s.end_date);
-      const diff = Math.floor((end.getTime() - start.getTime()) / 86400000) + 1;
-      totalShiftDays += diff;
-    }
-
-    const spanStart = new Date(from_date);
-    const spanEnd = new Date(to_date);
-    const spanDays = Math.floor((spanEnd.getTime() - spanStart.getTime()) / 86400000) + 1;
-    const spanWeeks = Math.max(1, spanDays / 7);
-
-    summaries.push({
-      from_date,
-      to_date,
-      shift_type: shiftType,
-      total_shifts: totalShiftDays,
-      avg_days_per_week: Math.round((totalShiftDays / spanWeeks) * 10) / 10,
-    });
-  }
-
-  return summaries;
-}
-
-function getShiftColor(shiftType: string): string {
-  if (shiftType.includes("8")) return "bg-indigo-500";
-  if (shiftType.includes("4")) return "bg-blue-400";
-  return "bg-indigo-500";
-}
-
-function RoosterView({
-  employeeShifts,
-  year,
-  totalDays,
-  monthPositions,
-}: {
-  employeeShifts: [string, ShiftAssignment[]][];
+function OverurenView({ employees, timesheets, leaves, year, company }: {
+  employees: { name: string; employee_name: string; company: string }[];
+  timesheets: TimesheetSummary[];
+  leaves: LeaveApplication[];
   year: number;
-  totalDays: number;
-  monthPositions: { left: number; width: number }[];
+  company: string;
 }) {
-  const [tooltip, setTooltip] = useState<{
-    summary: ShiftSummary;
-    employeeName: string;
-    x: number;
-    y: number;
-  } | null>(null);
+  const [expandedEmp, setExpandedEmp] = useState<string | null>(null);
+  const [expandedWeekData, setExpandedWeekData] = useState<Record<string, Record<number, Record<string, { gewerkt: number; verlof: number; ziekte: number }>>>>({});
+  const scrollRef = useRef<HTMLDivElement>(null);
 
-  const [holidayTooltip, setHolidayTooltip] = useState<{
-    name: string;
-    x: number;
-    y: number;
-  } | null>(null);
+  const getISOWeek = (d: Date): number => {
+    const tmp = new Date(d.getTime());
+    tmp.setHours(0, 0, 0, 0);
+    tmp.setDate(tmp.getDate() + 3 - ((tmp.getDay() + 6) % 7));
+    const w1 = new Date(tmp.getFullYear(), 0, 4);
+    return 1 + Math.round(((tmp.getTime() - w1.getTime()) / 86400000 - 3 + ((w1.getDay() + 6) % 7)) / 7);
+  };
 
-  const [zoom, setZoom] = useState(1);
-  const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const now = new Date();
+  const currentWeekNum = now.getFullYear() === year ? getISOWeek(now) : 53;
+  const lastCompletedWeek = Math.max(0, currentWeekNum - 1);
+  const isZiekteType = (lt: string) => lt.toLowerCase().includes("ziekte");
 
-  // Ctrl+scroll zoom
-  useEffect(() => {
-    const el = scrollContainerRef.current;
-    if (!el) return;
+  // Get contract hours per employee from Shift Plan Assignment
+  const savedContractHours = getEmployeeContractHours();
 
-    function handleWheel(e: WheelEvent) {
-      if (e.ctrlKey) {
-        e.preventDefault();
-        e.stopPropagation();
-        setZoom((z) => Math.min(3, Math.max(0.5, z - e.deltaY * 0.001)));
+  // Build per-employee per-week data
+  const empData = useMemo(() => {
+    const result = new Map<string, Map<number, { gewerkt: number; verlof: number; ziekte: number }>>();
+    const empIds = new Set(employees.map(e => e.name));
+
+    for (const ts of timesheets) {
+      if (!empIds.has(ts.employee)) continue;
+      if (!result.has(ts.employee)) result.set(ts.employee, new Map());
+      const week = getISOWeek(new Date(ts.start_date));
+      const m = result.get(ts.employee)!;
+      if (!m.has(week)) m.set(week, { gewerkt: 0, verlof: 0, ziekte: 0 });
+      m.get(week)!.gewerkt += ts.total_hours;
+    }
+
+    for (const la of leaves) {
+      if (la.status !== "Approved") continue;
+      const empName = employees.find(e => e.employee_name === la.employee_name)?.name;
+      if (!empName || !empIds.has(empName)) continue;
+      if (!result.has(empName)) result.set(empName, new Map());
+      const from = new Date(la.from_date);
+      const to = new Date(la.to_date);
+      const d = new Date(from);
+      while (d <= to) {
+        if (d.getDay() !== 0 && d.getDay() !== 6 && d.getFullYear() === year) {
+          const week = getISOWeek(d);
+          const m = result.get(empName)!;
+          if (!m.has(week)) m.set(week, { gewerkt: 0, verlof: 0, ziekte: 0 });
+          if (isZiekteType(la.leave_type)) {
+            m.get(week)!.ziekte += 8;
+          } else {
+            m.get(week)!.verlof += 8;
+          }
+        }
+        d.setDate(d.getDate() + 1);
       }
     }
 
-    el.addEventListener("wheel", handleWheel, { passive: false });
-    return () => el.removeEventListener("wheel", handleWheel);
-  }, []);
+    return result;
+  }, [employees, timesheets, leaves, year]);
 
-  // Block browser Ctrl+scroll zoom over calendar
-  useEffect(() => {
-    const el = scrollContainerRef.current;
-    if (!el) return;
-
-    function handleDocumentWheel(e: WheelEvent) {
-      if (!e.ctrlKey) return;
-      const rect = el!.getBoundingClientRect();
-      if (
-        e.clientX >= rect.left &&
-        e.clientX <= rect.right &&
-        e.clientY >= rect.top &&
-        e.clientY <= rect.bottom
-      ) {
-        e.preventDefault();
-      }
+  // Get all weeks that have data
+  const allWeeks = useMemo(() => {
+    const weeks = new Set<number>();
+    for (const [, m] of empData) {
+      for (const w of m.keys()) weeks.add(w);
     }
+    return [...weeks].sort((a, b) => a - b);
+  }, [empData]);
 
-    document.addEventListener("wheel", handleDocumentWheel, { passive: false });
-    return () => document.removeEventListener("wheel", handleDocumentWheel);
-  }, []);
-
-  // Holiday positions
-  const holidayPositions = useMemo(() => {
-    const holidays = HOLIDAYS[year] || [];
-    return holidays.map((h) => {
-      const day = dayOfYear(h.date, year);
-      const left = (day / totalDays) * 100;
-      return { ...h, left };
-    });
-  }, [year, totalDays]);
-
-  const employeesWithShifts = employeeShifts.length;
-
-  if (employeeShifts.length === 0) {
-    return (
-      <div className="flex items-center justify-center py-16 text-slate-400">
-        Geen roostergegevens gevonden voor dit jaar
-      </div>
-    );
+  function fmt(n: number): string {
+    return n % 1 !== 0 ? n.toFixed(1) : n.toFixed(0);
   }
 
   return (
     <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
-      {/* Legend */}
-      <div className="px-4 py-2 border-b border-slate-200 flex items-center gap-4 text-xs text-slate-500">
-        <span className="flex items-center gap-1.5">
-          <span className="w-3 h-3 rounded bg-indigo-500 inline-block" /> 8 uur
-        </span>
-        <span className="flex items-center gap-1.5">
-          <span className="w-3 h-3 rounded bg-blue-400 inline-block" /> 4 uur
-        </span>
-        <span className="flex items-center gap-1.5">
-          <span className="w-0.5 h-3 border-l-2 border-dashed border-red-400 inline-block" /> Feestdag
-        </span>
-        <span className="ml-auto text-slate-400">{employeesWithShifts} medewerkers met rooster</span>
-      </div>
-
-      {/* Zoom controls */}
-      <div className="px-4 py-1.5 border-b border-slate-100 flex items-center gap-3 text-xs text-slate-500">
-        <span className="flex items-center gap-1.5">
-          <ZoomIn size={14} />
-          Zoom: {Math.round(zoom * 100)}%
-        </span>
-        <button
-          onClick={() => setZoom((z) => Math.min(3, z + 0.25))}
-          className="px-2 py-0.5 bg-slate-100 hover:bg-slate-200 rounded text-xs cursor-pointer"
-          title="Inzoomen"
-        >
-          <ZoomIn size={12} />
-        </button>
-        <button
-          onClick={() => setZoom((z) => Math.max(0.5, z - 0.25))}
-          className="px-2 py-0.5 bg-slate-100 hover:bg-slate-200 rounded text-xs cursor-pointer"
-          title="Uitzoomen"
-        >
-          <ZoomOut size={12} />
-        </button>
-        <button
-          onClick={() => setZoom(1)}
-          className="px-2 py-0.5 bg-slate-100 hover:bg-slate-200 rounded text-xs cursor-pointer flex items-center gap-1"
-          title="Zoom resetten"
-        >
-          <RotateCcw size={12} />
-          Reset
-        </button>
-        <span className="text-slate-400 ml-1">Ctrl+Scroll om te zoomen</span>
-      </div>
-
-      <div className="overflow-x-auto" ref={scrollContainerRef}>
-        <div style={{ minWidth: `${900 * zoom}px` }}>
-          {/* Month headers */}
-          <div className="flex border-b border-slate-200">
-            <div className="w-48 flex-shrink-0 px-4 py-2 bg-slate-50 text-xs font-semibold text-slate-500">
-              Medewerker
-            </div>
-            <div className="flex-1 relative h-8">
-              {monthPositions.map((pos, i) => (
-                <div
-                  key={i}
-                  className="absolute top-0 h-full flex items-center justify-center text-xs font-medium text-slate-500 border-l border-slate-100"
-                  style={{ left: `${pos.left}%`, width: `${pos.width}%` }}
-                >
-                  {MONTHS[i]}
-                </div>
+      <div className="overflow-y-auto scrollbar-visible" style={{ maxHeight: "600px" }} ref={scrollRef}>
+        <table className="w-full text-xs">
+          <thead className="bg-slate-50 sticky top-0 z-10">
+            <tr>
+              <th className="text-left px-3 py-2 font-semibold text-slate-600 sticky left-0 bg-slate-50 min-w-[160px]">Medewerker</th>
+              <th className="text-right px-2 py-2 font-semibold text-slate-600 w-16">Contract</th>
+              {allWeeks.map(w => (
+                <th key={w} className={`text-center px-1 py-2 font-semibold min-w-[140px] ${w === currentWeekNum ? "text-amber-700 bg-amber-50" : "text-slate-600"}`}>
+                  Wk {w}
+                </th>
               ))}
-              {holidayPositions.map((h) => (
-                <div
-                  key={h.date}
-                  className="absolute bottom-0.5 w-1.5 h-1.5 rounded-full bg-red-400"
-                  style={{ left: `${h.left}%`, transform: "translateX(-50%)" }}
-                  title={h.name}
-                />
-              ))}
-            </div>
-          </div>
+              <th className="text-right px-3 py-2 font-semibold text-slate-600 w-20">Saldo</th>
+            </tr>
+          </thead>
+          <tbody>
+            {employees.map(emp => {
+              const weeks = empData.get(emp.name);
+              const weeklyHours = savedContractHours[emp.name] || 40;
+              let saldo = 0;
 
-          {/* Employee rows */}
-          {employeeShifts.map(([name, employeeShiftList]) => {
-            const summaries = summarizeShifts(employeeShiftList);
-            return (
-              <div key={name} className="flex border-b border-slate-100 hover:bg-slate-50/50">
-                <div className="w-48 flex-shrink-0 px-4 py-2 text-sm font-medium text-slate-700 truncate">
-                  {name}
-                </div>
-                <div className="flex-1 relative h-10">
-                  {/* Month grid lines */}
-                  {monthPositions.map((pos, i) => (
-                    <div
-                      key={i}
-                      className="absolute top-0 h-full border-l border-slate-100"
-                      style={{ left: `${pos.left}%` }}
-                    />
-                  ))}
-                  {/* Holiday vertical markers */}
-                  {holidayPositions.map((h) => (
-                    <div
-                      key={h.date}
-                      className="absolute top-0 h-full border-l-[1.5px] border-dashed border-red-300 z-[1] cursor-help"
-                      style={{ left: `${h.left}%` }}
-                      onMouseEnter={(e) => {
-                        const rect = e.currentTarget.getBoundingClientRect();
-                        setHolidayTooltip({
-                          name: h.name,
-                          x: rect.left + rect.width / 2,
-                          y: rect.top,
-                        });
-                      }}
-                      onMouseLeave={() => setHolidayTooltip(null)}
-                    />
-                  ))}
-                  {/* Shift bars */}
-                  {summaries.map((summary, idx) => {
-                    const fromDay = Math.max(0, dayOfYear(summary.from_date, year));
-                    const toDay = Math.min(totalDays - 1, dayOfYear(summary.to_date, year));
-                    const left = (fromDay / totalDays) * 100;
-                    const width = Math.max(0.3, ((toDay - fromDay + 1) / totalDays) * 100);
+              return (
+                <tr key={emp.name} className="border-t border-slate-100 hover:bg-slate-50">
+                  <td className="px-3 py-2 font-medium text-slate-700 sticky left-0 bg-white">{emp.employee_name}</td>
+                  <td className="text-right px-2 py-2 text-slate-500">{weeklyHours}u</td>
+                  {allWeeks.map(w => {
+                    const wd = weeks?.get(w) || { gewerkt: 0, verlof: 0, ziekte: 0 };
+                    const weekTotal = wd.gewerkt + wd.verlof + wd.ziekte;
+                    const delta = weekTotal > 0 && w <= lastCompletedWeek ? weekTotal - weeklyHours : 0;
+                    if (weekTotal > 0 && w <= lastCompletedWeek) saldo += delta;
+                    const overtime = Math.max(0, delta);
+                    const maxBar = Math.max(weeklyHours, weekTotal);
+                    const gewerktBar = maxBar > 0 ? (Math.min(wd.gewerkt, weeklyHours) / maxBar) * 100 : 0;
+                    const verlofBar = maxBar > 0 ? (wd.verlof / maxBar) * 100 : 0;
+                    const ziekteBar = maxBar > 0 ? (wd.ziekte / maxBar) * 100 : 0;
+                    const overtimePct = maxBar > 0 ? (overtime / maxBar) * 100 : 0;
 
                     return (
-                      <div
-                        key={`${summary.shift_type}-${idx}`}
-                        className={`absolute top-1.5 h-7 rounded-sm ${getShiftColor(summary.shift_type)} opacity-80 hover:opacity-100 cursor-pointer transition-opacity z-[2] flex items-center overflow-hidden`}
-                        style={{ left: `${left}%`, width: `${width}%`, minWidth: "3px" }}
-                        onMouseEnter={(e) => {
-                          const rect = e.currentTarget.getBoundingClientRect();
-                          setTooltip({
-                            summary,
-                            employeeName: name,
-                            x: rect.left + rect.width / 2,
-                            y: rect.top,
-                          });
-                        }}
-                        onMouseLeave={() => setTooltip(null)}
-                      >
-                        <span className="text-[10px] text-white px-1 truncate whitespace-nowrap">
-                          {summary.shift_type} — ~{summary.avg_days_per_week}d/w
-                        </span>
-                      </div>
+                      <td key={w} className={`px-1 py-2 ${w === currentWeekNum ? "bg-amber-50" : ""}`}>
+                        {weekTotal > 0 ? (
+                          <div className="flex items-center gap-0.5">
+                            <div className="h-3 bg-slate-100 rounded-full flex overflow-hidden flex-shrink-0" style={{ width: "65%" }}>
+                              {gewerktBar > 0 && <div className="h-3 bg-3bm-teal" style={{ width: `${gewerktBar}%` }} />}
+                              {verlofBar > 0 && <div className="h-3 bg-emerald-400" style={{ width: `${verlofBar}%` }} />}
+                              {ziekteBar > 0 && <div className="h-3 bg-orange-400" style={{ width: `${ziekteBar}%` }} />}
+                            </div>
+                            {overtime > 0 && (
+                              <div className="h-3 bg-red-400 rounded-r-full flex-shrink-0"
+                                style={{ width: `${Math.min(overtimePct * 0.65, 25)}%` }} />
+                            )}
+                            <span className="text-[10px] flex-shrink-0 whitespace-nowrap ml-0.5">
+                              <span className={overtime > 0 ? "text-red-600 font-semibold" : "text-slate-500"}>
+                                {delta > 0 ? "+" : ""}{fmt(delta)}
+                              </span>
+                              {wd.verlof > 0 && <span className="text-emerald-600 ml-0.5">{fmt(wd.verlof)}v</span>}
+                              {wd.ziekte > 0 && <span className="text-orange-600 ml-0.5">{fmt(wd.ziekte)}z</span>}
+                            </span>
+                          </div>
+                        ) : (
+                          <span className="text-slate-300">{"\u2014"}</span>
+                        )}
+                      </td>
                     );
                   })}
-                </div>
-              </div>
-            );
-          })}
-        </div>
+                  <td className={`text-right px-3 py-2 font-semibold ${saldo > 0 ? "text-red-600" : saldo < 0 ? "text-blue-600" : "text-slate-400"}`}>
+                    {saldo > 0 ? "+" : ""}{fmt(saldo)}u
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
       </div>
-
-      {/* Shift tooltip */}
-      {tooltip && (
-        <div
-          className="fixed z-50 bg-slate-800 text-white text-xs rounded-lg px-3 py-2 shadow-lg pointer-events-none"
-          style={{
-            left: tooltip.x,
-            top: tooltip.y - 8,
-            transform: "translate(-50%, -100%)",
-          }}
-        >
-          <p className="font-semibold">{tooltip.employeeName}</p>
-          <p>{tooltip.summary.shift_type}</p>
-          <p>
-            {tooltip.summary.from_date} — {tooltip.summary.to_date}
-          </p>
-          <p>Totaal: {tooltip.summary.total_shifts} dagen</p>
-          <p>Gem: ~{tooltip.summary.avg_days_per_week} dagen/week</p>
-        </div>
-      )}
-
-      {/* Holiday tooltip */}
-      {holidayTooltip && (
-        <div
-          className="fixed z-50 bg-red-700 text-white text-xs rounded-lg px-3 py-1.5 shadow-lg pointer-events-none"
-          style={{
-            left: holidayTooltip.x,
-            top: holidayTooltip.y - 8,
-            transform: "translate(-50%, -100%)",
-          }}
-        >
-          <p className="font-semibold">{holidayTooltip.name}</p>
-        </div>
-      )}
+      {/* Legend */}
+      <div className="px-4 py-2 border-t border-slate-200 flex items-center gap-4 text-[10px] text-slate-500">
+        <span className="flex items-center gap-1"><span className="w-3 h-2 bg-3bm-teal rounded-full inline-block" /> Gewerkt</span>
+        <span className="flex items-center gap-1"><span className="w-3 h-2 bg-emerald-400 rounded-full inline-block" /> Verlof</span>
+        <span className="flex items-center gap-1"><span className="w-3 h-2 bg-orange-400 rounded-full inline-block" /> Ziekte</span>
+        <span className="flex items-center gap-1"><span className="w-3 h-2 bg-red-400 rounded-full inline-block" /> Overuren</span>
+      </div>
     </div>
   );
 }

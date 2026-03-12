@@ -1,6 +1,6 @@
 import { useEffect, useState, useMemo } from "react";
 import { fetchList, fetchDocument } from "../lib/erpnext";
-import { Users, RefreshCw, Search, Filter, Cake, CalendarClock, FileWarning, Clock } from "lucide-react";
+import { Users, RefreshCw, Search, Filter, Cake, CalendarClock, FileWarning, Clock, Palmtree, Thermometer } from "lucide-react";
 import CompanySelect from "../components/CompanySelect";
 
 interface Employee {
@@ -33,6 +33,25 @@ interface ShiftTypeDoc {
   name: string;
   start_time: string;
   end_time: string;
+}
+
+interface LeaveAllocation {
+  employee: string;
+  leave_type: string;
+  total_leaves_allocated: number;
+}
+
+interface LeaveApplication {
+  employee: string;
+  leave_type: string;
+  total_leave_days: number;
+  status: string;
+}
+
+interface LeaveSummary {
+  vakantieAllocated: number;
+  vakantieUsed: number;
+  ziekteDagen: number;
 }
 
 const statusColors: Record<string, string> = {
@@ -188,6 +207,8 @@ export default function Employees() {
   const [activityTypes, setActivityTypes] = useState<string[]>([]);
   const [employeeActivityMap, setEmployeeActivityMap] = useState<Record<string, string>>(getEmployeeActivityTypes());
   const [contractHours, setContractHours] = useState<Record<string, number>>(getEmployeeContractHours());
+  const [leaveSummary, setLeaveSummary] = useState<Record<string, LeaveSummary>>({});
+  const [overurenSaldo, setOverurenSaldo] = useState<Record<string, number>>({});
 
   async function loadData() {
     setLoading(true);
@@ -302,7 +323,142 @@ export default function Employees() {
   }
 
   useEffect(() => { loadData(); }, [statusFilter, company]);
-  useEffect(() => { loadActivityTypes(); loadContractHours(); }, []);
+  async function loadLeaveData() {
+    try {
+      const year = new Date().getFullYear();
+      const [allocs, apps] = await Promise.all([
+        fetchList<LeaveAllocation>("Leave Allocation", {
+          fields: ["employee", "leave_type", "total_leaves_allocated"],
+          filters: [
+            ["docstatus", "=", 1],
+            ["from_date", "<=", `${year}-12-31`],
+            ["to_date", ">=", `${year}-01-01`],
+          ],
+          limit_page_length: 500,
+        }),
+        fetchList<LeaveApplication>("Leave Application", {
+          fields: ["employee", "leave_type", "total_leave_days", "status"],
+          filters: [
+            ["status", "in", ["Approved", "Open"]],
+            ["from_date", "<=", `${year}-12-31`],
+            ["to_date", ">=", `${year}-01-01`],
+          ],
+          limit_page_length: 500,
+        }),
+      ]);
+
+      const summary: Record<string, LeaveSummary> = {};
+      const isZiekte = (lt: string) => lt.toLowerCase().includes("ziekte");
+
+      for (const a of allocs) {
+        if (!summary[a.employee]) summary[a.employee] = { vakantieAllocated: 0, vakantieUsed: 0, ziekteDagen: 0 };
+        if (!isZiekte(a.leave_type)) {
+          summary[a.employee].vakantieAllocated += a.total_leaves_allocated;
+        }
+      }
+
+      for (const app of apps) {
+        if (!summary[app.employee]) summary[app.employee] = { vakantieAllocated: 0, vakantieUsed: 0, ziekteDagen: 0 };
+        if (isZiekte(app.leave_type)) {
+          summary[app.employee].ziekteDagen += app.total_leave_days;
+        } else {
+          summary[app.employee].vakantieUsed += app.total_leave_days;
+        }
+      }
+
+      setLeaveSummary(summary);
+    } catch {
+      // silently fail
+    }
+  }
+
+  async function loadOverurenData() {
+    try {
+      const year = new Date().getFullYear();
+      const [tsList, appsList] = await Promise.all([
+        fetchList<{ name: string; employee: string; start_date: string; total_hours: number }>("Timesheet", {
+          fields: ["name", "employee", "start_date", "total_hours"],
+          filters: [
+            ["start_date", ">=", `${year}-01-01`],
+            ["start_date", "<=", `${year}-12-31`],
+            ["docstatus", "=", 1],
+          ],
+          limit_page_length: 0,
+          order_by: "start_date asc",
+        }),
+        fetchList<{ employee: string; leave_type: string; from_date: string; to_date: string; total_leave_days: number; status: string }>("Leave Application", {
+          fields: ["employee", "leave_type", "from_date", "to_date", "total_leave_days", "status"],
+          filters: [
+            ["status", "=", "Approved"],
+            ["from_date", "<=", `${year}-12-31`],
+            ["to_date", ">=", `${year}-01-01`],
+          ],
+          limit_page_length: 500,
+        }),
+      ]);
+
+      const getISOWeek = (d: Date): number => {
+        const tmp = new Date(d.getTime());
+        tmp.setHours(0, 0, 0, 0);
+        tmp.setDate(tmp.getDate() + 3 - ((tmp.getDay() + 6) % 7));
+        const w1 = new Date(tmp.getFullYear(), 0, 4);
+        return 1 + Math.round(((tmp.getTime() - w1.getTime()) / 86400000 - 3 + ((w1.getDay() + 6) % 7)) / 7);
+      };
+      const now = new Date();
+      const currentWeek = now.getFullYear() === year ? getISOWeek(now) : 53;
+      const lastCompletedWeek = Math.max(0, currentWeek - 1);
+
+      const empWeeks = new Map<string, Map<number, number>>();
+      for (const ts of tsList) {
+        if (!empWeeks.has(ts.employee)) empWeeks.set(ts.employee, new Map());
+        const week = getISOWeek(new Date(ts.start_date));
+        const m = empWeeks.get(ts.employee)!;
+        m.set(week, (m.get(week) || 0) + ts.total_hours);
+      }
+      for (const la of appsList) {
+        if (!empWeeks.has(la.employee)) empWeeks.set(la.employee, new Map());
+        const from = new Date(la.from_date);
+        const to = new Date(la.to_date);
+        const d = new Date(from);
+        while (d <= to) {
+          if (d.getDay() !== 0 && d.getDay() !== 6 && d.getFullYear() === year) {
+            const week = getISOWeek(d);
+            const m = empWeeks.get(la.employee)!;
+            m.set(week, (m.get(week) || 0) + 8);
+          }
+          d.setDate(d.getDate() + 1);
+        }
+      }
+
+      // Fetch contract hours from Shift Plan Assignment
+      const spAssignments = await fetchList<{ employee: string; shift_plan: string }>("Shift Plan Assignment", {
+        fields: ["employee", "shift_plan"],
+        limit_page_length: 500,
+      }).catch(() => [] as { employee: string; shift_plan: string }[]);
+      const spHoursMap: Record<string, number> = {};
+      for (const a of spAssignments) {
+        const match = a.shift_plan?.match(/^(\d+)/);
+        if (match) spHoursMap[a.employee] = parseInt(match[1], 10);
+      }
+
+      const saldo: Record<string, number> = {};
+      for (const [empId, weeks] of empWeeks) {
+        const weeklyHours = spHoursMap[empId] || contractHours[empId] || 40;
+        let s = 0;
+        for (const [w, total] of weeks) {
+          if (w <= lastCompletedWeek && total > 0) {
+            s += total - weeklyHours;
+          }
+        }
+        saldo[empId] = Math.round(s * 10) / 10;
+      }
+      setOverurenSaldo(saldo);
+    } catch {
+      // silently fail
+    }
+  }
+
+  useEffect(() => { loadActivityTypes(); loadContractHours(); loadLeaveData(); loadOverurenData(); }, []);
 
   function handleActivityChange(employeeId: string, value: string) {
     saveEmployeeActivityType(employeeId, value);
@@ -395,6 +551,7 @@ export default function Employees() {
             const serviceYears = yearsOfService(emp.date_of_joining);
             const contractDays = daysUntilDate(emp.contract_end_date);
             const weekHours = contractHours[emp.name];
+            const ls = leaveSummary[emp.name];
 
             return (
               <div key={emp.name} className="bg-white rounded-xl shadow-sm border border-slate-200 p-5 hover:shadow-md transition-shadow">
@@ -502,6 +659,64 @@ export default function Employees() {
                       <span className="text-slate-700 font-medium">{weekHours} uur/week</span>
                     </div>
                   )}
+
+                  {/* Vakantiedagen */}
+                  {ls && ls.vakantieAllocated > 0 && (() => {
+                    const remaining = ls.vakantieAllocated - ls.vakantieUsed;
+                    const pct = (remaining / ls.vakantieAllocated) * 100;
+                    const barColor = remaining <= 3 ? "bg-red-500" : remaining <= 5 ? "bg-amber-400" : "bg-3bm-teal";
+                    return (
+                      <div className="flex justify-between items-center">
+                        <span className="text-slate-400 flex items-center gap-1 flex-shrink-0">
+                          <Palmtree size={13} />
+                          Vakantie
+                        </span>
+                        <div className="flex items-center gap-2">
+                          <div className="w-24 h-2 bg-slate-100 rounded-full overflow-hidden">
+                            <div className={`h-full rounded-full ${barColor}`} style={{ width: `${Math.max(0, Math.min(100, pct))}%` }} />
+                          </div>
+                          <span className="text-slate-700 text-xs w-16 text-right">{remaining}d/{ls.vakantieAllocated}d</span>
+                        </div>
+                      </div>
+                    );
+                  })()}
+
+                  {/* Ziektedagen */}
+                  {ls && ls.ziekteDagen > 0 && (() => {
+                    const SICK_MAX = 20;
+                    const pct = Math.min(100, (ls.ziekteDagen / SICK_MAX) * 100);
+                    return (
+                      <div className="flex justify-between items-center">
+                        <span className="text-slate-400 flex items-center gap-1 flex-shrink-0">
+                          <Thermometer size={13} />
+                          Ziekte
+                        </span>
+                        <div className="flex items-center gap-2">
+                          <div className="w-24 h-2 bg-slate-100 rounded-full overflow-hidden">
+                            <div className="h-full rounded-full bg-orange-400" style={{ width: `${pct}%` }} />
+                          </div>
+                          <span className="text-slate-700 text-xs w-16 text-right">{ls.ziekteDagen} dagen</span>
+                        </div>
+                      </div>
+                    );
+                  })()}
+
+                  {/* Overuren saldo */}
+                  {overurenSaldo[emp.name] !== undefined && overurenSaldo[emp.name] !== 0 && (() => {
+                    const s = overurenSaldo[emp.name];
+                    const isPositive = s > 0;
+                    return (
+                      <div className="flex justify-between items-center">
+                        <span className="text-slate-400 flex items-center gap-1 flex-shrink-0">
+                          <Clock size={13} />
+                          Overuren
+                        </span>
+                        <span className={`text-xs font-semibold ${isPositive ? "text-red-600" : "text-blue-600"}`}>
+                          {isPositive ? "+" : ""}{s}u
+                        </span>
+                      </div>
+                    );
+                  })()}
 
                   {/* Uurtype dropdown */}
                   {activityTypes.length > 0 && (

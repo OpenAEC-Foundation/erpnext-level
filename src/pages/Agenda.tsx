@@ -5,7 +5,7 @@ import { getActiveInstanceId } from "../lib/instances";
 import {
   Calendar, ChevronLeft, ChevronRight, Clock, MapPin, Users,
   Plus, RefreshCw, X, Send, Video, CheckSquare, CalendarDays,
-  Settings, Trash2,
+  Settings, Trash2, ExternalLink,
 } from "lucide-react";
 
 /* ─── Types ─── */
@@ -16,12 +16,13 @@ interface EventItem {
   start: string;
   end?: string;
   allDay: boolean;
-  type: "event" | "task" | "leave" | "timesheet" | "ical";
+  type: "event" | "task" | "leave" | "timesheet" | "ical" | "o365";
   color: string;
   description?: string;
   location?: string;
   owner?: string;
   calendarId?: string;
+  webLink?: string;
 }
 
 type ViewType = "month" | "week" | "day";
@@ -72,6 +73,7 @@ const TYPE_COLORS: Record<string, string> = {
   leave: "#ef4444",
   timesheet: "#10b981",
   ical: "#8b5cf6",
+  o365: "#0078d4",
 };
 
 const TYPE_LABELS: Record<string, string> = {
@@ -80,6 +82,7 @@ const TYPE_LABELS: Record<string, string> = {
   leave: "Verlof",
   timesheet: "Timesheet",
   ical: "Agenda",
+  o365: "Office 365",
 };
 
 const CALENDAR_COLORS = [
@@ -267,16 +270,36 @@ function AddCalendarModal({ onClose, onAdd }: {
 
 /* ─── Settings Panel ─── */
 
-function SettingsPanel({ erpSources, calendars, onErpToggle, onCalendarToggle, onCalendarRemove, onAddCalendar }: {
+function SettingsPanel({ erpSources, calendars, o365Enabled, onErpToggle, onCalendarToggle, onCalendarRemove, onAddCalendar, onO365Toggle }: {
   erpSources: Record<ErpSourceKey, boolean>;
   calendars: CustomCalendar[];
+  o365Enabled: boolean;
   onErpToggle: (key: ErpSourceKey) => void;
   onCalendarToggle: (id: string) => void;
   onCalendarRemove: (id: string) => void;
   onAddCalendar: () => void;
+  onO365Toggle: () => void;
 }) {
+  const instanceId = getActiveInstanceId();
+  const hasO365 = localStorage.getItem(`pref_${instanceId}_imap_authMode`) === "oauth2";
+
   return (
     <div className="w-64 bg-white border-l border-slate-200 flex flex-col flex-shrink-0 overflow-y-auto">
+      {/* Office 365 Calendar */}
+      {hasO365 && (
+        <div className="px-4 py-3 border-b border-slate-200">
+          <h3 className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-3">Office 365</h3>
+          <label className="flex items-center gap-2.5 cursor-pointer group">
+            <button onClick={onO365Toggle}
+              className={`relative w-8 h-[18px] rounded-full transition-colors cursor-pointer ${o365Enabled ? "bg-blue-500" : "bg-slate-300"}`}>
+              <span className={`absolute top-[2px] w-[14px] h-[14px] rounded-full bg-white shadow transition-transform ${o365Enabled ? "left-[16px]" : "left-[2px]"}`} />
+            </button>
+            <span className="w-2.5 h-2.5 rounded-full flex-shrink-0" style={{ backgroundColor: TYPE_COLORS.o365 }} />
+            <span className="text-xs text-slate-700 group-hover:text-slate-900">Outlook Agenda</span>
+          </label>
+        </div>
+      )}
+
       {/* ERPNext Sources */}
       <div className="px-4 py-3 border-b border-slate-200">
         <h3 className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-3">Bronnen (ERPNext)</h3>
@@ -582,6 +605,8 @@ export default function Agenda() {
   const [currentDate, setCurrentDate] = useState(() => new Date());
   const [events, setEvents] = useState<EventItem[]>([]);
   const [icalEvents, setIcalEvents] = useState<EventItem[]>([]);
+  const [o365Events, setO365Events] = useState<EventItem[]>([]);
+  const [o365Enabled, setO365Enabled] = useState(() => localStorage.getItem(getPrefKey("o365_enabled")) !== "false");
   const [loading, setLoading] = useState(true);
   const [selectedDate, setSelectedDate] = useState<Date | null>(null);
   const [createModal, setCreateModal] = useState<Partial<CreateForm> | null>(null);
@@ -817,9 +842,55 @@ export default function Agenda() {
 
   useEffect(() => { loadIcalEvents(); }, [loadIcalEvents]);
 
+  /* ─── Load Office 365 calendar ─── */
+
+  const loadO365Events = useCallback(async () => {
+    if (!o365Enabled) { setO365Events([]); return; }
+    const instanceId = getActiveInstanceId();
+    // Check if this instance has OAuth2 email configured (= Office 365)
+    const email = localStorage.getItem(`pref_${instanceId}_imap_user`) || "";
+    const authMode = localStorage.getItem(`pref_${instanceId}_imap_authMode`) || "";
+    if (authMode !== "oauth2" || !email) { setO365Events([]); return; }
+
+    try {
+      const res = await fetch(`/api/calendar/o365?instance=${instanceId}&email=${encodeURIComponent(email)}&start=${dateRange.start}&end=${dateRange.end}`);
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        console.warn("[agenda] O365 calendar error:", (err as any).error || res.status);
+        return;
+      }
+      const { data } = await res.json() as { data: Array<{
+        id: string; subject: string; start: string; end: string;
+        isAllDay: boolean; location: string; bodyPreview: string;
+        organizer: string; attendees: string[]; webLink: string;
+      }> };
+
+      const items: EventItem[] = data.map(e => ({
+        id: `o365-${e.id}`,
+        title: e.subject,
+        start: e.start,
+        end: e.end || undefined,
+        allDay: e.isAllDay,
+        type: "o365" as const,
+        color: TYPE_COLORS.o365,
+        description: e.bodyPreview,
+        location: e.location,
+        owner: e.organizer,
+        webLink: e.webLink,
+      }));
+
+      console.log(`[agenda] Loaded ${items.length} O365 events`);
+      setO365Events(items);
+    } catch (err) {
+      console.warn("[agenda] O365 calendar fetch error:", err);
+    }
+  }, [o365Enabled, dateRange.start, dateRange.end]);
+
+  useEffect(() => { loadO365Events(); }, [loadO365Events]);
+
   /* ─── Combined events ─── */
 
-  const allEvents = useMemo(() => [...events, ...icalEvents], [events, icalEvents]);
+  const allEvents = useMemo(() => [...events, ...icalEvents, ...o365Events], [events, icalEvents, o365Events]);
 
   const eventsByDate = useMemo(() => {
     const map = new Map<string, EventItem[]>();
@@ -842,6 +913,7 @@ export default function Agenda() {
 
   const activeLegend = useMemo(() => {
     const items: Array<{ label: string; color: string }> = [];
+    if (o365Enabled) items.push({ label: "Outlook 365", color: TYPE_COLORS.o365 });
     if (erpSources.events) items.push({ label: "Afspraken", color: TYPE_COLORS.event });
     if (erpSources.tasks) items.push({ label: "Taken", color: TYPE_COLORS.task });
     if (erpSources.leaves) items.push({ label: "Verlof", color: TYPE_COLORS.leave });
@@ -850,7 +922,7 @@ export default function Agenda() {
       if (cal.enabled) items.push({ label: cal.name, color: cal.color });
     }
     return items;
-  }, [erpSources, calendars]);
+  }, [erpSources, calendars, o365Enabled]);
 
   /* ─── Click-to-create handler ─── */
 
@@ -1103,6 +1175,12 @@ export default function Agenda() {
                   <Video size={11} /> Jitsi Meeting openen
                 </a>
               )}
+              {e.webLink && (
+                <a href={e.webLink} target="_blank" rel="noopener noreferrer"
+                  className="flex items-center gap-1 mt-2 text-xs hover:underline" style={{ color: TYPE_COLORS.o365 }}>
+                  <ExternalLink size={11} /> Openen in Outlook
+                </a>
+              )}
             </div>
           ))}
         </div>
@@ -1121,9 +1199,6 @@ export default function Agenda() {
         return `${start.getDate()} ${MONTH_NAMES[start.getMonth()].slice(0, 3)} - ${end.getDate()} ${MONTH_NAMES[end.getMonth()].slice(0, 3)} ${end.getFullYear()}`;
       })()
     : currentDate.toLocaleDateString("nl-NL", { weekday: "long", day: "numeric", month: "long", year: "numeric" });
-
-  /* ─── Check if anything is visible ─── */
-  const hasAnySources = Object.values(erpSources).some(Boolean) || calendars.some(c => c.enabled);
 
   return (
     <div className="flex flex-col h-full bg-white">
@@ -1205,10 +1280,18 @@ export default function Agenda() {
           <SettingsPanel
             erpSources={erpSources}
             calendars={calendars}
+            o365Enabled={o365Enabled}
             onErpToggle={handleErpToggle}
             onCalendarToggle={handleCalendarToggle}
             onCalendarRemove={handleCalendarRemove}
             onAddCalendar={() => setAddCalendarModal(true)}
+            onO365Toggle={() => {
+              setO365Enabled(prev => {
+                const next = !prev;
+                localStorage.setItem(getPrefKey("o365_enabled"), String(next));
+                return next;
+              });
+            }}
           />
         )}
       </div>

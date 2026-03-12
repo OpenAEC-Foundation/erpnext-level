@@ -67,7 +67,7 @@ export const CACHED_DOCTYPES: DoctypeConfig[] = [
     doctype: "Task",
     fields: [
       "name", "subject", "project", "status", "priority", "exp_start_date",
-      "exp_end_date", "completed_on", "_assign", "description", "company", "modified",
+      "exp_end_date", "completed_on", "_assign", "description", "company", "workflow_state", "modified",
     ],
   },
   {
@@ -83,6 +83,13 @@ export const CACHED_DOCTYPES: DoctypeConfig[] = [
     fields: [
       "name", "employee", "employee_name", "leave_type", "from_date", "to_date",
       "total_leave_days", "status", "company", "docstatus", "modified",
+    ],
+  },
+  {
+    doctype: "Leave Allocation",
+    fields: [
+      "name", "employee", "employee_name", "leave_type", "from_date", "to_date",
+      "new_leaves_allocated", "total_leaves_allocated", "unused_leaves", "company", "docstatus", "modified",
     ],
   },
   {

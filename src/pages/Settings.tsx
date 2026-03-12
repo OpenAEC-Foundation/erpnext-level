@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { Settings, Save, Building2, ExternalLink, Shield, CheckCircle, XCircle, Key, Eye, EyeOff, Mail, Cloud, Wifi } from "lucide-react";
+import { Settings, Save, Building2, ExternalLink, Shield, CheckCircle, XCircle, Key, Eye, EyeOff, Mail, Cloud, Wifi, Bot, Video } from "lucide-react";
 import { useCompanies, useEmployees } from "../lib/DataContext";
 import { getActiveInstance, getActiveInstanceId } from "../lib/instances";
 import { getErpNextLinkUrl } from "../lib/erpnext";
@@ -41,6 +41,17 @@ export default function SettingsPage() {
   const [showImapPass, setShowImapPass] = useState(false);
   const [imapTesting, setImapTesting] = useState(false);
   const [imapTestResult, setImapTestResult] = useState<{ ok: boolean; message: string } | null>(null);
+
+  // NextCloud Talk
+  const [ncTalkUrl, setNcTalkUrl] = useState(() => localStorage.getItem(`pref_${instanceId}_messenger_nextcloud-talk_url`) || localStorage.getItem(`pref_${instanceId}_nextcloud_url`) || "");
+  const [ncTalkUser, setNcTalkUser] = useState(() => localStorage.getItem(`pref_${instanceId}_messenger_nextcloud-talk_user`) || localStorage.getItem(`pref_${instanceId}_nextcloud_user`) || "");
+  const [ncTalkPass, setNcTalkPass] = useState(() => localStorage.getItem(`pref_${instanceId}_messenger_nextcloud-talk_pass`) || localStorage.getItem(`pref_${instanceId}_nextcloud_pass`) || "");
+  const [showNcTalkPass, setShowNcTalkPass] = useState(false);
+  // Telegram
+  const [telegramToken, setTelegramToken] = useState(() => localStorage.getItem(`pref_${instanceId}_messenger_telegram_token`) || "");
+  const [showTelegramToken, setShowTelegramToken] = useState(false);
+  // MS Teams
+  const [teamsEmail, setTeamsEmail] = useState(() => localStorage.getItem(`pref_${instanceId}_messenger_ms-teams_email`) || "");
 
   const [saved, setSaved] = useState(false);
   const [cacheStatus, setCacheStatus] = useState<Record<string, unknown> | null>(null);
@@ -106,6 +117,15 @@ export default function SettingsPage() {
     if (imapUser) localStorage.setItem(`pref_${id}_imap_user`, imapUser); else localStorage.removeItem(`pref_${id}_imap_user`);
     if (imapPass) localStorage.setItem(`pref_${id}_imap_pass`, imapPass); else localStorage.removeItem(`pref_${id}_imap_pass`);
     localStorage.setItem(`pref_${id}_imap_secure`, String(imapSecure));
+    // Messenger - NextCloud Talk
+    const cleanNcTalkUrl = ncTalkUrl.replace(/\/+$/, "");
+    if (cleanNcTalkUrl) localStorage.setItem(`pref_${id}_messenger_nextcloud-talk_url`, cleanNcTalkUrl); else localStorage.removeItem(`pref_${id}_messenger_nextcloud-talk_url`);
+    if (ncTalkUser) localStorage.setItem(`pref_${id}_messenger_nextcloud-talk_user`, ncTalkUser); else localStorage.removeItem(`pref_${id}_messenger_nextcloud-talk_user`);
+    if (ncTalkPass) localStorage.setItem(`pref_${id}_messenger_nextcloud-talk_pass`, ncTalkPass); else localStorage.removeItem(`pref_${id}_messenger_nextcloud-talk_pass`);
+    // Messenger - Telegram
+    if (telegramToken) localStorage.setItem(`pref_${id}_messenger_telegram_token`, telegramToken); else localStorage.removeItem(`pref_${id}_messenger_telegram_token`);
+    // Messenger - MS Teams
+    if (teamsEmail) localStorage.setItem(`pref_${id}_messenger_ms-teams_email`, teamsEmail); else localStorage.removeItem(`pref_${id}_messenger_ms-teams_email`);
 
     setSaved(true);
     setTimeout(() => setSaved(false), 2500);
@@ -533,6 +553,90 @@ export default function SettingsPage() {
               <Wifi size={14} className={imapTesting ? "animate-pulse" : ""} />
               {imapTesting ? "Testen..." : "Test verbinding"}
             </button>
+          </div>
+
+          {/* NextCloud Talk */}
+          <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-6 space-y-4">
+            <div className="flex items-center gap-3 mb-2">
+              <Cloud size={20} className="text-blue-500" />
+              <h3 className="text-base font-semibold text-slate-700">NextCloud Talk</h3>
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-slate-600 mb-1">NextCloud URL</label>
+              <input
+                type="url" value={ncTalkUrl}
+                onChange={(e) => setNcTalkUrl(e.target.value)}
+                placeholder="https://cloud.example.com"
+                className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-slate-600 mb-1">Gebruikersnaam</label>
+              <input
+                type="text" value={ncTalkUser}
+                onChange={(e) => setNcTalkUser(e.target.value)}
+                placeholder="admin"
+                className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-slate-600 mb-1">Wachtwoord</label>
+              <div className="relative">
+                <input
+                  type={showNcTalkPass ? "text" : "password"} value={ncTalkPass}
+                  onChange={(e) => setNcTalkPass(e.target.value)}
+                  placeholder="App-wachtwoord"
+                  className="w-full px-3 py-2 pr-10 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+                <button onClick={() => setShowNcTalkPass(!showNcTalkPass)}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 cursor-pointer">
+                  {showNcTalkPass ? <EyeOff size={16} /> : <Eye size={16} />}
+                </button>
+              </div>
+              <p className="text-xs text-slate-400 mt-1">Gebruik een app-wachtwoord voor betere beveiliging.</p>
+            </div>
+          </div>
+
+          {/* Telegram */}
+          <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-6 space-y-4">
+            <div className="flex items-center gap-3 mb-2">
+              <Bot size={20} className="text-sky-500" />
+              <h3 className="text-base font-semibold text-slate-700">Telegram Bot</h3>
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-slate-600 mb-1">Bot Token</label>
+              <div className="relative">
+                <input
+                  type={showTelegramToken ? "text" : "password"} value={telegramToken}
+                  onChange={(e) => setTelegramToken(e.target.value)}
+                  placeholder="123456789:ABCdefGHIjklMNOpqrsTUVwxyz"
+                  className="w-full px-3 py-2 pr-10 border border-slate-200 rounded-lg text-sm font-mono focus:outline-none focus:ring-2 focus:ring-sky-500"
+                />
+                <button onClick={() => setShowTelegramToken(!showTelegramToken)}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 cursor-pointer">
+                  {showTelegramToken ? <EyeOff size={16} /> : <Eye size={16} />}
+                </button>
+              </div>
+              <p className="text-xs text-slate-400 mt-1">Maak een bot aan via @BotFather in Telegram.</p>
+            </div>
+          </div>
+
+          {/* MS Teams */}
+          <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-6 space-y-4">
+            <div className="flex items-center gap-3 mb-2">
+              <Video size={20} className="text-violet-500" />
+              <h3 className="text-base font-semibold text-slate-700">MS Teams</h3>
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-slate-600 mb-1">Microsoft 365 e-mailadres</label>
+              <input
+                type="email" value={teamsEmail}
+                onChange={(e) => setTeamsEmail(e.target.value)}
+                placeholder="gebruiker@bedrijf.nl"
+                className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-violet-500"
+              />
+              <p className="text-xs text-slate-400 mt-1">Hetzelfde e-mailadres als in Webmail (Office 365). Vereist Chat.Read scope in de Connected App.</p>
+            </div>
           </div>
 
           {/* Save all button (bottom) */}

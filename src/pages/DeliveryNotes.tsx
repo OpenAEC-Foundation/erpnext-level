@@ -50,7 +50,7 @@ export default function DeliveryNotes() {
     setError(null);
     try {
       const filters: unknown[][] = [
-        ["docstatus", "=", 1],
+        ["docstatus", "!=", 2],
       ];
       if (company) filters.push(["company", "=", company]);
       if (statusFilter.length > 0) filters.push(["status", "in", statusFilter]);
