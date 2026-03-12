@@ -1131,39 +1131,30 @@ export default function Webmail() {
       const q = buildQuery(finalConfig);
       console.log("[Webmail] Loading mail for", finalConfig.user, "via instance", instanceId);
 
-      // Load folders
-      try {
-        const fRes = await fetch(`/api/mail/folders?${q}`);
-        const fText = await fRes.text();
-        if (fText) {
-          const fData = JSON.parse(fText);
-          if (fData.error) console.error("[Webmail] Folders error:", fData.error);
-          if (fData.data) { setFolders(fData.data); console.log("[Webmail] Loaded", fData.data.length, "folders"); }
-        }
-      } catch (err) { console.error("[Webmail] loadFolders error:", err); }
+      // Load folders + messages in parallel for speed
+      setLoading(true);
+      const [foldersPromise, messagesPromise] = [
+        fetch(`/api/mail/folders?${q}`).then(r => r.text()).then(t => t ? JSON.parse(t) : null).catch(() => null),
+        fetch(`/api/mail/messages?${q}&folder=INBOX&pageSize=5000`).then(r => r.text()).then(t => t ? JSON.parse(t) : null).catch(() => null),
+      ];
 
-      // Load messages
-      try {
-        setLoading(true);
-        const mRes = await fetch(`/api/mail/messages?${q}&folder=INBOX&pageSize=5000`);
-        const mText = await mRes.text();
-        if (!mText) { setLoading(false); return; }
-        const mData = JSON.parse(mText);
-        if (mData.error) {
-          setError(mData.error);
-        } else {
-          const msgs = mData.data?.messages || [];
-          const tot = mData.data?.total || 0;
-          console.log("[Webmail] Loaded", msgs.length, "messages from INBOX");
-          setMessages(msgs);
-          setTotal(tot);
-          folderMsgCache.set("INBOX", { messages: msgs, total: tot, ts: Date.now() });
-        }
-      } catch (err) {
-        setError((err as Error).message);
-      } finally {
-        setLoading(false);
+      const [fData, mData] = await Promise.all([foldersPromise, messagesPromise]);
+
+      if (fData?.data) {
+        setFolders(fData.data);
+        console.log("[Webmail] Loaded", fData.data.length, "folders");
       }
+      if (mData?.error) {
+        setError(mData.error);
+      } else if (mData?.data) {
+        const msgs = mData.data.messages || [];
+        const tot = mData.data.total || 0;
+        console.log("[Webmail] Loaded", msgs.length, "messages from INBOX");
+        setMessages(msgs);
+        setTotal(tot);
+        folderMsgCache.set("INBOX", { messages: msgs, total: tot, ts: Date.now() });
+      }
+      setLoading(false);
     })();
   }, []);
 

@@ -42,7 +42,24 @@ import Passwords from "./pages/Passwords";
 import Messenger from "./pages/Messenger";
 
 function App() {
-  const [page, setPage] = useState<Page>("dashboard");
+  const [page, _setPage] = useState<Page>(() => {
+    const params = new URLSearchParams(window.location.search);
+    const p = params.get("page");
+    if (p) return p as Page;
+    return "dashboard";
+  });
+
+  // Wrap setPage to also update the URL
+  const setPage = useCallback((p: Page) => {
+    _setPage(p);
+    const url = new URL(window.location.href);
+    if (p === "dashboard") {
+      url.searchParams.delete("page");
+    } else {
+      url.searchParams.set("page", p);
+    }
+    window.history.pushState({}, "", url.toString());
+  }, []);
   const [viewMode, setViewMode] = useState<ViewMode>(
     () => (localStorage.getItem("view_mode") as ViewMode) || "werkgever"
   );
@@ -60,6 +77,17 @@ function App() {
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [handleKeyDown]);
+
+  // Handle browser back/forward
+  useEffect(() => {
+    const handlePopState = () => {
+      const params = new URLSearchParams(window.location.search);
+      const p = params.get("page");
+      _setPage((p || "dashboard") as Page);
+    };
+    window.addEventListener("popstate", handlePopState);
+    return () => window.removeEventListener("popstate", handlePopState);
+  }, []);
 
   function handleInstanceSwitch() {
     setInstanceKey(getActiveInstanceId());

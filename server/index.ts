@@ -28,12 +28,12 @@ try {
 }
 import { MultiCacheManager } from "./cache.js";
 import { matchesFilters, applyOrderBy, selectFields } from "./filter.js";
-import { getAllInstances, getInstance, proxyRequest, getConfigFilePath } from "./erpnext-client.js";
+import { getAllInstances, getInstance, proxyRequest, getConfigFilePath, reloadInstances } from "./erpnext-client.js";
 import { handleAgentChat } from "./agent.js";
 import { readVault, writeVault, upsertVaultEntry, removeVaultEntry, getVaultFilePath, type VaultEntry } from "./vault.js";
 import { readPasswords, upsertPasswordEntry, removePasswordEntry, importPasswords, type PasswordEntry } from "./passwords.js";
 import { handleTerminalConnection } from "./terminal.js";
-import { mailTestConnection, mailListFolders, mailListMessages, mailGetMessage, mailGetAttachment, mailSend, mailDeleteMessage, mailMoveMessage, mailCreateFolder, mailWarmup, mailCacheStats, mailMarkUnread, mailRenameFolder, mailAutoConfig } from "./mail.js";
+import { mailTestConnection, mailListFolders, mailListMessages, mailGetMessage, mailGetAttachment, mailSend, mailDeleteMessage, mailMoveMessage, mailCreateFolder, mailWarmup, mailCacheStats, mailMarkUnread, mailRenameFolder, mailAutoConfig, mailStartupWarmup, mailIsWarm } from "./mail.js";
 import { nextcloudListFiles, nextcloudDownloadUrl, nextcloudDownload, nextcloudUpload } from "./nextcloud.js";
 import { healthGetReport, healthRunTests, healthGetMail, healthGetMessenger, runAllTests } from "./health.js";
 import { messengerListConversations, messengerGetMessages, messengerSendMessage, messengerMarkRead, messengerAllConversations } from "./messenger.js";
@@ -202,6 +202,229 @@ app.get("/api/resource/:doctype", async (req, res) => {
     res.json({ data: docs });
   } catch (err) {
     res.status(400).json({ error: (err as Error).message });
+  }
+});
+
+/* ─── Stats: GET /api/stats/uren ─── */
+// Pre-computed uren statistics: employee monthly, project monthly, billable %
+interface UrenStatsCache {
+  data: {
+    employeeMonthly: { employee: string; name: string; months: number[]; billableMonths: number[]; total: number; totalBillable: number }[];
+    projectMonthly: { project: string; name: string; months: number[]; total: number }[];
+    totalHours: number;
+    totalBillable: number;
+    billablePercent: number;
+  };
+  ts: number;
+}
+const urenStatsCache = new Map<string, UrenStatsCache>();
+const UREN_STATS_TTL = 5 * 60_000; // 5 min
+
+app.get("/api/stats/uren", async (req, res) => {
+  const instanceId = resolveInstanceId(req);
+  const cache = multiCache.get(instanceId);
+  if (!cache) return res.status(404).json({ error: `Unknown instance: ${instanceId}` });
+
+  await cache.waitReady();
+  const year = req.query.year as string || new Date().getFullYear().toString();
+  const cacheKey = `${instanceId}:${year}`;
+
+  // Return cached if fresh
+  const cached = urenStatsCache.get(cacheKey);
+  if (cached && Date.now() - cached.ts < UREN_STATS_TTL) {
+    return res.json(cached.data);
+  }
+
+  try {
+    // Build employee → company map for filtering
+    const company = req.query.company as string || "";
+    const empCompanyMap = new Map<string, string>();
+    const employees = cache.getAll("Employee");
+    for (const emp of employees) {
+      empCompanyMap.set(emp.name as string, emp.company as string || "");
+    }
+
+    const timesheets = cache.getAll("Timesheet").filter((ts) => {
+      if (ts.docstatus !== 1) return false;
+      if (typeof ts.start_date !== "string" || !(ts.start_date as string).startsWith(year)) return false;
+      // Filter by company via employee lookup
+      if (company) {
+        const empCompany = empCompanyMap.get(ts.employee as string) || "";
+        if (empCompany !== company) return false;
+      }
+      return true;
+    });
+
+    const inst = getInstance(instanceId);
+    if (!inst) return res.status(404).json({ error: "Instance not found" });
+
+    // Fetch time_logs from individual timesheets in parallel batches
+    const empMap = new Map<string, { employee: string; name: string; months: number[]; billableMonths: number[]; total: number; totalBillable: number }>();
+    const projMap = new Map<string, { project: string; name: string; months: number[]; total: number }>();
+    let totalHours = 0, totalBillable = 0;
+    // Per-month totals for billable percentage
+    const monthTotalHours = new Array(12).fill(0);
+    const monthBillableHours = new Array(12).fill(0);
+    // Bureau Algemeen: non-billable hours by activity type
+    const activityMap = new Map<string, { activity: string; months: number[]; total: number }>();
+
+    const batchSize = 20;
+    for (let i = 0; i < timesheets.length; i += batchSize) {
+      const batch = timesheets.slice(i, i + batchSize);
+      const results = await Promise.allSettled(
+        batch.map(async (ts) => {
+          const result = await proxyRequest(inst, `/api/resource/Timesheet/${encodeURIComponent(ts.name as string)}`);
+          return { ts, doc: JSON.parse(result.body)?.data };
+        })
+      );
+
+      for (const r of results) {
+        if (r.status !== "fulfilled" || !r.value.doc) continue;
+        const { ts, doc } = r.value;
+        const emp = ts.employee as string;
+        const empName = ts.employee_name as string;
+        const monthIdx = parseInt((ts.start_date as string).slice(5, 7)) - 1;
+
+        if (!empMap.has(emp)) {
+          empMap.set(emp, { employee: emp, name: empName, months: new Array(12).fill(0), billableMonths: new Array(12).fill(0), total: 0, totalBillable: 0 });
+        }
+        const empEntry = empMap.get(emp)!;
+        empEntry.months[monthIdx] += (ts.total_hours as number) || 0;
+        empEntry.total += (ts.total_hours as number) || 0;
+        totalHours += (ts.total_hours as number) || 0;
+        monthTotalHours[monthIdx] += (ts.total_hours as number) || 0;
+
+        for (const log of (doc.time_logs || [])) {
+          const hours = log.hours || 0;
+          const isBillable = log.is_billable || 0;
+          const proj = log.project || "(geen project)";
+
+          if (isBillable) {
+            empEntry.billableMonths[monthIdx] += hours;
+            empEntry.totalBillable += hours;
+            totalBillable += hours;
+            monthBillableHours[monthIdx] += hours;
+          } else {
+            // Track non-billable by activity type
+            const activity = log.activity_type || "(geen activiteit)";
+            if (!activityMap.has(activity)) {
+              activityMap.set(activity, { activity, months: new Array(12).fill(0), total: 0 });
+            }
+            const actEntry = activityMap.get(activity)!;
+            actEntry.months[monthIdx] += hours;
+            actEntry.total += hours;
+          }
+
+          if (!projMap.has(proj)) {
+            // Lookup project name from cache
+            const projDoc = cache.getAll("Project").find(p => p.name === proj);
+            const projDisplayName = projDoc ? `${proj} — ${projDoc.project_name}` : proj;
+            projMap.set(proj, { project: proj, name: projDisplayName, months: new Array(12).fill(0), total: 0 });
+          }
+          const projEntry = projMap.get(proj)!;
+          projEntry.months[monthIdx] += hours;
+          projEntry.total += hours;
+        }
+      }
+    }
+
+    const monthBillablePercent = monthTotalHours.map((t, i) => t > 0 ? Math.round((monthBillableHours[i] / t) * 100) : 0);
+
+    const data = {
+      employeeMonthly: Array.from(empMap.values()).sort((a, b) => b.total - a.total),
+      projectMonthly: Array.from(projMap.values()).sort((a, b) => b.total - a.total),
+      totalHours,
+      totalBillable,
+      billablePercent: totalHours > 0 ? Math.round((totalBillable / totalHours) * 100) : 0,
+      monthTotalHours,
+      monthBillableHours,
+      monthBillablePercent,
+      bureauActivities: Array.from(activityMap.values()).sort((a, b) => b.total - a.total),
+    };
+
+    urenStatsCache.set(cacheKey, { data, ts: Date.now() });
+    res.json(data);
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+/* ─── Stats: GET /api/stats/uren/detail ─── */
+// Detail view: individual time_logs for a specific employee + month
+app.get("/api/stats/uren/detail", async (req, res) => {
+  const instanceId = resolveInstanceId(req);
+  const cache = multiCache.get(instanceId);
+  if (!cache) return res.status(404).json({ error: `Unknown instance: ${instanceId}` });
+
+  await cache.waitReady();
+  const year = req.query.year as string || new Date().getFullYear().toString();
+  const month = parseInt(req.query.month as string || "0", 10); // 0-based
+  const employee = req.query.employee as string;
+
+  if (!employee) return res.status(400).json({ error: "Missing employee parameter" });
+
+  try {
+    const timesheets = cache.getAll("Timesheet").filter((ts) =>
+      ts.docstatus === 1 &&
+      ts.employee === employee &&
+      typeof ts.start_date === "string" &&
+      (ts.start_date as string).startsWith(year) &&
+      parseInt((ts.start_date as string).slice(5, 7)) - 1 === month
+    );
+
+    const inst = getInstance(instanceId);
+    if (!inst) return res.status(404).json({ error: "Instance not found" });
+
+    const logs: { date: string; project: string; activity: string; hours: number; isBillable: boolean; description: string }[] = [];
+
+    // Build project name lookup
+    const projNameMap = new Map<string, string>();
+    const projects = cache.getAll("Project");
+    for (const p of projects) {
+      projNameMap.set(p.name as string, p.project_name as string || p.name as string);
+    }
+
+    const results = await Promise.allSettled(
+      timesheets.map(async (ts) => {
+        const result = await proxyRequest(inst, `/api/resource/Timesheet/${encodeURIComponent(ts.name as string)}`);
+        return JSON.parse(result.body)?.data;
+      })
+    );
+
+    for (const r of results) {
+      if (r.status !== "fulfilled" || !r.value) continue;
+      const doc = r.value;
+      for (const log of (doc.time_logs || [])) {
+        const projId = log.project || "";
+        const projName = projId ? projNameMap.get(projId) : "";
+        const projDisplay = projName ? `${projId} — ${projName}` : projId;
+        logs.push({
+          date: log.from_time?.split(" ")[0] || doc.start_date || "",
+          project: projDisplay,
+          activity: log.activity_type || "",
+          hours: log.hours || 0,
+          isBillable: !!(log.is_billable),
+          description: log.description || "",
+        });
+      }
+    }
+
+    logs.sort((a, b) => a.date.localeCompare(b.date));
+
+    const totalHours = logs.reduce((s, l) => s + l.hours, 0);
+    const billableHours = logs.filter(l => l.isBillable).reduce((s, l) => s + l.hours, 0);
+
+    res.json({
+      employee,
+      month,
+      year,
+      logs,
+      totalHours,
+      billableHours,
+      billablePercent: totalHours > 0 ? Math.round((billableHours / totalHours) * 100) : 0,
+    });
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message });
   }
 });
 
@@ -390,6 +613,8 @@ app.post("/api/vault", (req, res) => {
       return res.status(400).json({ error: "id and url are required" });
     }
     upsertVaultEntry(entry);
+    // Reload instances so new credentials take effect immediately
+    reloadInstances();
     res.json({ ok: true });
   } catch (err) {
     res.status(500).json({ error: (err as Error).message });
@@ -487,6 +712,7 @@ app.get("/api/mail/cache-stats", mailCacheStats);
 app.post("/api/mail/mark-unread", mailMarkUnread);
 app.post("/api/mail/rename-folder", mailRenameFolder);
 app.get("/api/mail/auto-config", mailAutoConfig);
+app.get("/api/mail/warm", mailIsWarm);
 
 /* ─── NextCloud WebDAV ─── */
 
@@ -797,8 +1023,9 @@ export async function startServer(port?: number): Promise<number> {
   if (existsSync(distDir)) {
     console.log(`[server] Serving static files from ${distDir}`);
     app.use(express.static(distDir));
-    // SPA fallback — must be after all API routes
-    app.get("*", (_req, res) => {
+    // SPA fallback — must be after all API routes, skip /api/* paths
+    app.get("*", (req, res, next) => {
+      if (req.path.startsWith("/api/")) return next();
       res.sendFile(join(distDir, "index.html"));
     });
   }
@@ -822,6 +1049,9 @@ export async function startServer(port?: number): Promise<number> {
     server.listen(listenPort, () => {
       const actualPort = (server.address() as { port: number }).port;
       console.log(`[server] Backend running on http://localhost:${actualPort}`);
+
+      // Eagerly warm up all mail accounts (IMAP connections + INBOX preload)
+      mailStartupWarmup().catch(err => console.error("[mail-warmup] Startup error:", err));
 
       // Run health checks in background after startup (30s delay to let caches load)
       setTimeout(() => {

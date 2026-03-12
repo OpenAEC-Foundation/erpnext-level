@@ -96,7 +96,7 @@ export const CACHED_DOCTYPES: DoctypeConfig[] = [
     doctype: "Timesheet",
     fields: [
       "name", "employee", "employee_name", "start_date", "end_date",
-      "total_hours", "total_billed_hours", "total_billed_amount", "status", "company", "docstatus", "modified",
+      "total_hours", "total_billable_hours", "total_billed_hours", "total_billed_amount", "status", "company", "docstatus", "modified",
     ],
   },
   {
@@ -140,6 +140,13 @@ export const CACHED_DOCTYPES: DoctypeConfig[] = [
   {
     doctype: "Address",
     fields: ["name", "address_line1", "city", "pincode", "country", "modified"],
+  },
+  {
+    doctype: "Account",
+    fields: [
+      "name", "account_name", "account_number", "parent_account", "root_type",
+      "account_type", "company", "is_group", "modified",
+    ],
   },
 ];
 
@@ -282,6 +289,10 @@ export class CacheManager {
     }
     const map = new Map<string, Doc>();
     for (const doc of docs) {
+      // ERPNext omits fields with value 0 from list responses — backfill requested fields
+      for (const f of cfg.fields) {
+        if (!(f in doc)) doc[f] = 0;
+      }
       map.set(doc.name as string, doc);
     }
     this.store.set(cfg.doctype, map);

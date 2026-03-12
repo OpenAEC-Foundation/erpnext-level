@@ -10,7 +10,6 @@ interface Account {
   parent_account: string;
   root_type: string;
   account_type: string;
-  balance: number;
   company: string;
   is_group: number;
 }
@@ -39,7 +38,7 @@ export default function Grootboeken() {
       if (company) filters.push(["company", "=", company]);
 
       const list = await fetchList<Account>("Account", {
-        fields: ["name", "account_name", "account_number", "parent_account", "root_type", "account_type", "balance", "company", "is_group"],
+        fields: ["name", "account_name", "account_number", "parent_account", "root_type", "account_type", "company", "is_group"],
         filters,
         limit_page_length: 0,
         order_by: "account_number asc, name asc",
@@ -145,9 +144,7 @@ export default function Grootboeken() {
                       </span>
                     )}
                   </td>
-                  <td className="px-4 py-2.5 text-right font-mono text-xs">
-                    {a.balance !== 0 ? `€ ${a.balance.toLocaleString("nl-NL", { minimumFractionDigits: 2 })}` : "—"}
-                  </td>
+                  <td className="px-4 py-2.5 text-right font-mono text-xs text-slate-400">—</td>
                   <td className="px-4 py-2.5 text-xs text-slate-500">{a.company}</td>
                   <td className="px-4 py-2.5">
                     <a href={`${getErpNextLinkUrl()}/account/${encodeURIComponent(a.name)}`}

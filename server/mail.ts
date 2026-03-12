@@ -13,7 +13,7 @@ import { ImapFlow } from "imapflow";
 import { simpleParser } from "mailparser";
 import { createTransport } from "nodemailer";
 import type { Request, Response } from "express";
-import { getInstance, proxyRequest } from "./erpnext-client.js";
+import { getInstance, getAllInstances, proxyRequest } from "./erpnext-client.js";
 
 /* ─── Types ─── */
 
@@ -1282,6 +1282,78 @@ export async function mailAutoConfig(req: Request, res: Response) {
     console.error("[mail-auto-config] Error:", (err as Error).message);
     res.status(500).json({ error: (err as Error).message });
   }
+}
+
+/* ─── Startup warmup: preload all configured mail accounts ─── */
+
+/**
+ * Called once on server startup. Discovers all email accounts across instances
+ * and eagerly connects + preloads INBOX so the frontend loads instantly.
+ */
+export async function mailStartupWarmup(): Promise<void> {
+  const instances = getAllInstances();
+  console.log(`[mail-warmup] Starting eager warmup for ${instances.length} instance(s)...`);
+
+  for (const inst of instances) {
+    try {
+      // Find all Email Account doctypes for this instance
+      const result = await proxyRequest(inst,
+        `/api/resource/Email Account?fields=${encodeURIComponent(JSON.stringify(["name", "email_id", "enable_incoming"]))}&filters=${encodeURIComponent(JSON.stringify([["enable_incoming", "=", 1]]))}&limit_page_length=20`
+      );
+      const accounts = JSON.parse(result.body)?.data || [];
+
+      for (const acc of accounts) {
+        const email = acc.email_id;
+        if (!email) continue;
+
+        console.log(`[mail-warmup] Warming up ${email} (${inst.id})...`);
+        try {
+          const creds = await resolveCredentials(inst.id, email);
+          if (!creds) {
+            console.warn(`[mail-warmup] No credentials for ${email}`);
+            continue;
+          }
+
+          const cache = getAccountCache(creds);
+
+          // Fetch folders + INBOX message list + preload bodies — all in background
+          const folders = await cache.fetchFolders(true);
+          console.log(`[mail-warmup] ${email}: ${folders.length} folders`);
+
+          const msgResult = await cache.fetchMessages("INBOX", true, 1, 5000);
+          console.log(`[mail-warmup] ${email}: ${msgResult.messages.length} messages in INBOX`);
+
+          // Preload bodies in background (fire-and-forget)
+          if (msgResult.messages.length > 0) {
+            cache.preloadBodies("INBOX", msgResult.messages).catch(() => {});
+          }
+        } catch (err) {
+          console.error(`[mail-warmup] Failed for ${email}:`, (err as Error).message);
+        }
+      }
+    } catch (err) {
+      console.error(`[mail-warmup] Failed to list accounts for ${inst.id}:`, (err as Error).message);
+    }
+  }
+
+  console.log(`[mail-warmup] Startup warmup complete`);
+}
+
+/** Check if a mail account cache is warm (has messages loaded) */
+export function mailIsWarm(req: Request, res: Response) {
+  const instanceId = req.query.instance as string;
+  const email = req.query.email as string;
+  if (!instanceId || !email) return res.json({ warm: false });
+
+  // Check if we already have a cache for this email
+  for (const [key, cache] of accountCaches) {
+    if (key.includes(email)) {
+      const stats = cache.getStats();
+      const warm = stats.folderCaches > 0 || stats.cachedBodies > 0;
+      return res.json({ warm, stats });
+    }
+  }
+  res.json({ warm: false });
 }
 
 /* ─── Internal functions for health checks ─── */

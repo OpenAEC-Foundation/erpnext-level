@@ -8,9 +8,9 @@ export default defineConfig({
   plugins: [react(), tailwindcss(), dashboardPlugin()],
   server: {
     proxy: {
-      "/api": { target: "http://localhost:3001", changeOrigin: true },
-      "/ws": { target: "http://localhost:3001", changeOrigin: true, ws: true },
-      "/erpnext-proxy": { target: "http://localhost:3001", changeOrigin: true },
+      "/api": { target: "http://localhost:3021", changeOrigin: true },
+      "/ws": { target: "http://localhost:3021", changeOrigin: true, ws: true },
+      "/erpnext-proxy": { target: "http://localhost:3021", changeOrigin: true },
     },
   },
 })
