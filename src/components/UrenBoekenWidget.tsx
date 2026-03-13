@@ -522,12 +522,20 @@ export default function UrenBoekenWidget({
               className="w-full px-2.5 py-2 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-3bm-teal" />
           </div>
           <div>
-            <label className="block text-xs font-medium text-slate-600 mb-1">Van *</label>
+            <div className="flex items-center justify-between mb-1">
+              <label className="text-xs font-medium text-slate-600">Van *</label>
+              <button type="button" onClick={() => { const now = new Date(); setFromTime(`${String(now.getHours()).padStart(2,"0")}:${String(now.getMinutes()).padStart(2,"0")}`); }}
+                className="text-[10px] font-medium text-3bm-teal hover:text-3bm-teal-dark cursor-pointer">Nu</button>
+            </div>
             <input type="time" value={fromTime} onChange={(e) => setFromTime(e.target.value)} required
               className="w-full px-2.5 py-2 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-3bm-teal" />
           </div>
           <div>
-            <label className="block text-xs font-medium text-slate-600 mb-1">Tot *</label>
+            <div className="flex items-center justify-between mb-1">
+              <label className="text-xs font-medium text-slate-600">Tot *</label>
+              <button type="button" onClick={() => { const now = new Date(); setToTime(`${String(now.getHours()).padStart(2,"0")}:${String(now.getMinutes()).padStart(2,"0")}`); }}
+                className="text-[10px] font-medium text-3bm-teal hover:text-3bm-teal-dark cursor-pointer">Nu</button>
+            </div>
             <input type="time" value={toTime} onChange={(e) => setToTime(e.target.value)} required
               className="w-full px-2.5 py-2 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-3bm-teal" />
           </div>
